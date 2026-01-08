@@ -1,0 +1,18 @@
+{
+  "name": "subfluent",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build --mode popup && vite build --mode content && vite build --mode pagehook && vite build --mode background",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.32",
+    "@types/node": "^25.0.3",
+    "typescript": "~5.9.3",
+    "vite": "^7.2.4"
+  }
+}
