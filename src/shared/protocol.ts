@@ -37,4 +37,3 @@ export type ExtMessage<T extends MsgType = MsgType> =
 export type ExtNoPayloadMessage<T extends NoPayloadMsgType = NoPayloadMsgType> = 
   { type: T };
 
-export type Cue = { start: number; end: number; text: string };
