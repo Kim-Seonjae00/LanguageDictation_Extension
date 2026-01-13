@@ -1,7 +1,7 @@
 console.log("[SubFluent] content script loaded");
 
-import { Msg, type DictationResult, type SendDictation, type ExtMessage, type Cue } from "../shared/protocol";
-import { parseTtmlToCues } from "../shared/ttmlParser";
+import { Msg, type DictationResult, type SendDictation, type ExtMessage } from "../shared/protocol";
+import { parseTtml } from "../shared/ttmlParser";
 
 // --- TTML URL capture via page hook (pageScript) ---
 const PAGE_HOOK_SOURCE = "SubFluent";
@@ -17,8 +17,14 @@ window.addEventListener("message", async (ev) => {
     }
 
     if (d?.type === "TTML_TEXT") {
-        const cues:Cue[] = parseTtmlToCues(d.ttml);
-        console.log("[SubFluent] received TTML cues from page hook:", cues);
+        const TtmlDocument = parseTtml(d.ttml);
+        console.log("[SubFluent] received TTML Document from page hook:", TtmlDocument);
+        
+        return;
+    }
+
+    if(d?.type === "LOAD_SUBTITLE") {
+        console.log("[SubFluent] request to load subtitle for id:", d.trackId);
         return;
     }
 });

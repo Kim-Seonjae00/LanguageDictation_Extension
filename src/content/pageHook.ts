@@ -2,8 +2,26 @@
 
 (function () {
     const SRC = "SubFluent";
-    const TEST_LANG = ["es", "ko"]
-    let player: any = null;
+    const TEST_LANG = ["en", "ko"];
+    let playerFacade: any = null; // raw Netflix player (live object)
+
+    type PlayerFacade = {
+        getMovieId: () => any;
+        getTimedTextTrack: () => any;
+        getTimedTextTrackList: () => any;
+        setTimedTextTrack: (track: any) => Promise<any>;
+        getReady:() => boolean;
+    };
+
+    function createPlayerFacade(p: any): PlayerFacade {
+        return {
+            getMovieId: () => p?.getMovieId?.(),
+            getTimedTextTrack: () => p?.getTimedTextTrack?.(),
+            getTimedTextTrackList: () => p?.getTimedTextTrackList?.(),
+            setTimedTextTrack: (track: any) => p?.setTimedTextTrack?.(track),
+            getReady: () => p?.getReady?.(),
+        };
+    }
     // pageHook.ts (page world)
     // ===== 1) 공용 폴링 유틸 =====
     function pollUntil<T>(getter: () => T | null | undefined | false, label: string): Promise<T> {
@@ -31,13 +49,13 @@
     }
 
     // ===== 3) 메인: appContext -> videoPlayer -> sessionId -> player =====
-    async function initPlayerChain(callback: (player: any) => void) {
+    async function initPlayerChain(callback: () => void) {
         try {
             // A) appContext
             const appContext = await pollUntil<any>(() => {
                 const netflix = (window as any).netflix;
                 return netflix?.appContext;
-            }, "appContext" );
+            }, "appContext");
 
             // B) videoPlayer (appContext 있어도 videoPlayer가 늦게 생길 수 있음)
             const videoPlayer = await pollUntil<any>(() => {
@@ -50,40 +68,19 @@
             }, "sessionId");
 
             // D) player (sessionId로 player 인스턴스가 나올 때까지)
-            player = await pollUntil<any>(() => {
+            const player = await pollUntil<any>(() => {
                 return videoPlayer?.getVideoPlayerBySessionId?.(sessionId);
             }, "player");
 
-            // ===== 4) (선택) sessionId 변경 감시: 다음화/전환 대비 =====
-            watchSessionChanges(videoPlayer, sessionId);
-            callback(player)
+            playerFacade = createPlayerFacade(player);
+            callback();
         } catch (e) {
             console.warn("[SubFluent] initPlayerChain failed:", e);
             return null;
         }
     }
 
-    // ===== 4) (선택) sessionId가 바뀌면 다시 player 잡기 =====
-    function watchSessionChanges(videoPlayer: any, initialSessionId: string) {
-        let current = initialSessionId;
-
-        setInterval(async () => {
-            try {
-                const next = videoPlayer?.getAllPlayerSessionIds?.()?.[0];
-                if (!next || next === current) return;
-                current = next;
-
-                player = await pollUntil<any>(() => {
-                    return videoPlayer?.getVideoPlayerBySessionId?.(current);
-                }, "player (after session change)");
-            } catch (e) {
-                console.warn("[SubFluent] watchSessionChanges error:", e);
-            }
-        }, 500);
-    }
-    
-
-    function sendMessageToContentScript(player : any) { 
+    function sendMessageToContentScript() {
         const post = (data: any) => window.postMessage({ source: SRC, ...data }, "*");
 
         const looksLikeTtml = (text: string): boolean => {
@@ -91,20 +88,20 @@
             return head.startsWith("<tt") || head.includes("<tt ") || head.includes("<tt>");
         };
 
-        const isTtmlCandidateUrl = (rawUrl: string): boolean => {
+        type HookSetting = {
+            host: string;  
+            pathIncludes: string;       
+            requiredParams: readonly string[];
+        };
+
+        const isHookingUrl = (rawUrl: string, setting: HookSetting): boolean => {
             try {
                 const u = new URL(rawUrl, window.location.href);
-
-                // Netflix timed-text URLs we care about are https and come from *.nflxvideo.net
+                
                 if (u.protocol !== "https:") return false;
-                if (!u.hostname.endsWith(".nflxvideo.net")) return false;
-
-                // Heuristic based on your sample: query params must include o, v, e, t
-                const o = u.searchParams.get("o");
-                const v = u.searchParams.get("v");
-                const e = u.searchParams.get("e");
-                const t = u.searchParams.get("t");
-                if (!o || !v || !e || !t) return false;
+                if (!u.hostname.endsWith(setting.host)) return false;
+                if (!u.pathname.includes(setting.pathIncludes)) return false;
+                if (!setting.requiredParams.every((p) => u.searchParams.has(p))) return false;
 
                 return true;
             } catch {
@@ -112,7 +109,40 @@
             }
         };
 
-        (function initHook(callback:() => void) {
+        const getMainContentViewableId = (rawUrl: string): string | null => {
+            try {
+                const u = new URL(rawUrl, window.location.href);
+                return u.searchParams.get("mainContentViewableId");
+            } catch {
+                return null;
+            }
+        };
+
+        (function initHook(callback: () => void) {
+            const hookingSettings: Record<"ttmlXhrHook" | "licensedManifestXhrHook", HookSetting> = {
+                ttmlXhrHook: {
+                    host: ".nflxvideo.net",
+                    pathIncludes: "/",
+                    requiredParams: ["o", "v", "e", "t"],
+                },
+                licensedManifestXhrHook: {
+                    host: "www.netflix.com",
+                    pathIncludes: "/msl/playapi/cadmium/licensedmanifest/1",
+                    requiredParams: [
+                        "reqAttempt",
+                        "reqName",
+                        "reqId",
+                        "mainContentViewableId",
+                        "clienttype",
+                        "uiversion",
+                        "browsername",
+                        "browserversion",
+                        "osname",
+                        "osversion",
+                    ],
+                },
+            };
+
             const origOpen = XMLHttpRequest.prototype.open;
             XMLHttpRequest.prototype.open = function (
                 this: XMLHttpRequest,
@@ -132,37 +162,78 @@
                     try {
                         const url = String((this as any).__subfluent_url || "");
                         const ct = this.getResponseHeader("content-type") || "";
-                        const isNflx = isTtmlCandidateUrl(url);
-                        const isXml = ct.includes("text/xml") || ct.includes("application/xml");
-                        if (isNflx && isXml) {
-                            const maybeText = typeof (this as any).responseText === "string" ? (this as any).responseText : "";
-                            if (maybeText && looksLikeTtml(maybeText)) {
-                                post({ type: "TTML_TEXT", url, contentType: ct, ttml: maybeText });
-                                return;
+
+                        // 1) Licensed Manifest hook (episode start / switching)
+                        if (isHookingUrl(url, hookingSettings.licensedManifestXhrHook)) {
+                            if(!playerFacade?.getReady?.()) {
+                                console.log("[SubFluent] player not ready yet, change the player.");
+                                initPlayerChain(getDownloadableTrackList);
+                            }
+                            const trackId = getMainContentViewableId(url);
+                            const respText = typeof (this as any).responseText === "string" ? (this as any).responseText : "";
+                            console.log("[SubFluent] checking URL for hooking:", url);
+                            post({
+                                type: "LOAD_SUBTITLE",
+                                url,
+                                trackId,
+                                status: (this as any).status,
+                                contentType: ct,
+                                responseText: respText,
+                                via: "xhr",
+                            });
+                            return;
+                        }
+
+                        // 2) TTML hook (timed text)
+                        if (isHookingUrl(url, hookingSettings.ttmlXhrHook)) {
+                            const isXml = ct.includes("text/xml") || ct.includes("application/xml");
+                            if (isXml) {
+                                const maybeText = typeof (this as any).responseText === "string" ? (this as any).responseText : "";
+                                const isBcp47Match = TEST_LANG.includes(playerFacade?.getTimedTextTrack()?.bcp47?.toLowerCase() || "");
+                                if (maybeText && looksLikeTtml(maybeText) && isBcp47Match) {
+                                    post({ type: "TTML_TEXT", url, contentType: ct, ttml: maybeText });
+                                    return;
+                                }
                             }
                         }
                     } catch {
-                        console.log("SubFluent: error in XHR hook");
+                        console.log("SubFluent: error in XHR hooka");
                     }
                 });
+
                 return origSend.call(this, body as any);
             };
-        
 
-            post({ type: "HOOK_READY" });
+
+            post({ type: "HOOK_READY", hooks: ["TTML_XHR", "LICENSEDMANIFEST_XHR"] });
             callback();
-        }(requestSubtitleTrack));
+        }(getDownloadableTrackList));
 
-        function requestSubtitleTrack() {
-            const trackList = player?.getTimedTextTrackList?.().filter((track: any) => {
+        async function getDownloadableTrackList() {
+            const trackList = await pollUntil<any>(() => {
+                return playerFacade?.getTimedTextTrackList?.()
+            }, "TTMl");
+            console.log("[SubFluent] fetched timed text track list:", trackList);
+            const fiteredTracks = trackList?.filter((track: any) => {
                 const lang = track?.bcp47?.toLowerCase() || "";
                 return TEST_LANG.includes(lang);
             });
+            console.log("[SubFluent] filtered timed text tracks:", fiteredTracks);
+            requestTTMLForTrack(fiteredTracks);
+        }
 
-            if (trackList?.length > 0) {
-                for (const track of trackList) {
-                    console.log("[SubFluent] requesting timed text track:", track);
-                    player.setTimedTextTrack(track);
+        async function requestTTMLForTrack(trackList: any[]) {
+            if (!trackList?.length) {
+                console.log("[SubFluent] no matching timed text tracks found");
+                return;
+            }
+
+            for (const track of trackList) {
+                console.log("[SubFluent] requesting timed text track:", track);
+                try {
+                    await playerFacade.setTimedTextTrack(track);
+                } catch (e) {
+                    console.warn("[SubFluent] setTimedTextTrack failed:", e);
                 }
             }
         }
