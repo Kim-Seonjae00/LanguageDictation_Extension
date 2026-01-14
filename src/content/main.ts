@@ -1,10 +1,11 @@
 console.log("[SubFluent] content script loaded");
 
 import { Msg, type DictationResult, type SendDictation, type ExtMessage } from "../shared/protocol";
-import { parseTtml } from "../shared/ttmlParser";
+import { parseTtml}  from "../shared/ttmlParser"
 
 // --- TTML URL capture via page hook (pageScript) ---
 const PAGE_HOOK_SOURCE = "SubFluent";
+const downloadedTimedTextedTrackList = new Map<string, any>();
 
 // Listen for messages from the injected page hook
 window.addEventListener("message", async (ev) => {
@@ -17,9 +18,19 @@ window.addEventListener("message", async (ev) => {
     }
 
     if (d?.type === "TTML_TEXT") {
-        const TtmlDocument = parseTtml(d.ttml);
-        console.log("[SubFluent] received TTML Document from page hook:", TtmlDocument);
-        
+        const ttmlDocument = parseTtml(d.ttml)
+        const nttm = ttmlDocument.meta.nttm;
+        if(!nttm) return;
+        const k = nttm["nttm:movieID"] + d.langType;
+        if(!k) return;
+
+        const v = {
+            cues: ttmlDocument.cues,
+            styles: ttmlDocument.styles,
+            type: nttm["nttm:textType"]
+        }
+        downloadedTimedTextedTrackList.set(k, v);
+        console.log("[SubFluent] TrackList : ", downloadedTimedTextedTrackList)
         return;
     }
 
