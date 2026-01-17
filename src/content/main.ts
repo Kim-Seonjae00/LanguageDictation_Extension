@@ -1,11 +1,142 @@
-console.log("[SubFluent] content script loaded");
-
 import { Msg, type DictationResult, type SendDictation, type ExtMessage } from "../shared/protocol";
-import { parseTtml}  from "../shared/ttmlParser"
+import { parseTtmlSubtitle}  from "../shared/ttmlParser"
+import {setSubFluentLogLevel, subFluentDebug, subFluentInfo } from "../shared/util";
+import { contentState } from "./state/contentState";
+setSubFluentLogLevel("DEBUG");
+
+contentState.subscribeSubtitlesReady(({ movieId, bucket }) => {
+    subFluentInfo("subtitles ready", { movieId, native: !!bucket.native, learning: !!bucket.learning });
+});
+
+// --- Cue time-based logging (NO DOM, console only) ---
+type CueLike = { start: number; end: number; text: string; id?: string };
+
+function getVideoEl(): HTMLVideoElement | null {
+    return document.querySelector("video");
+}
+
+function findActiveCueIndex(cues: CueLike[], t: number, hintIdx: number): number {
+    if (!cues.length) return -1;
+
+    // fast path: check previous index and neighbors
+    if (hintIdx >= 0 && hintIdx < cues.length) {
+        const c = cues[hintIdx];
+        if (t >= c.start && t < c.end) return hintIdx;
+        const prev = cues[hintIdx - 1];
+        if (prev && t >= prev.start && t < prev.end) return hintIdx - 1;
+        const next = cues[hintIdx + 1];
+        if (next && t >= next.start && t < next.end) return hintIdx + 1;
+    }
+
+    // binary search (assumes cues sorted by start)
+    let lo = 0;
+    let hi = cues.length - 1;
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const c = cues[mid];
+        if (t < c.start) hi = mid - 1;
+        else if (t >= c.end) lo = mid + 1;
+        else return mid;
+    }
+    return -1;
+}
+
+let stopCueLogging: (() => void) | null = null;
+
+function startCueLogging(movieId: string, nativeCues: CueLike[], learningCues: CueLike[]) {
+    // stop previous loop
+    stopCueLogging?.();
+
+    let running = true;
+    let lastNativeIdx = -1;
+    let lastLearningIdx = -1;
+    let lastVideo: HTMLVideoElement | null = null;
+
+    const tick = () => {
+        if (!running) return;
+
+        const video = getVideoEl();
+        if (!video) {
+            requestAnimationFrame(tick);
+            return;
+        }
+
+        // video element swapped? reset indices so we log immediately
+        if (lastVideo !== video) {
+            lastVideo = video;
+            lastNativeIdx = -1;
+            lastLearningIdx = -1;
+        }
+
+        const t = video.currentTime;
+
+        const nIdx = findActiveCueIndex(nativeCues, t, lastNativeIdx);
+        const lIdx = findActiveCueIndex(learningCues, t, lastLearningIdx);
+
+        const changed = nIdx !== lastNativeIdx || lIdx !== lastLearningIdx;
+        if (changed) {
+            lastNativeIdx = nIdx;
+            lastLearningIdx = lIdx;
+
+            const n = nIdx >= 0 ? nativeCues[nIdx] : null;
+            const l = lIdx >= 0 ? learningCues[lIdx] : null;
+
+            subFluentInfo("cue", {
+                movieId,
+                t,
+                native: n ? { start: n.start, end: n.end, text: n.text } : null,
+                learning: l ? { start: l.start, end: l.end, text: l.text } : null,
+            });
+        }
+
+        requestAnimationFrame(tick);
+    };
+
+    requestAnimationFrame(tick);
+
+    stopCueLogging = () => {
+        running = false;
+    };
+}
+
+// Stop logging when movie changes or page unloads
+contentState.subscribeMovieId((next) => {
+    // movieId가 바뀌면 이전 루프는 중단
+    if (!next) {
+        stopCueLogging?.();
+        subFluentDebug("stopCueLogging::movieId X")
+        stopCueLogging = null;
+    }
+});
+
+
+window.addEventListener("beforeunload", () => {
+    stopCueLogging?.();
+    subFluentDebug("stopCueLogging::beforeuload")
+    stopCueLogging = null;
+});
+
+// When both subtitles ready, start time-based cue logging
+contentState.subscribeSubtitlesReady(({ movieId, bucket }) => {
+    if (!bucket.native || !bucket.learning) return;
+
+    // bucket.native / bucket.learning 의 cues 배열을 사용
+    const nativeCues = (bucket.native.cues ?? []) as CueLike[];
+    const learningCues = (bucket.learning.cues ?? []) as CueLike[];
+    subFluentDebug("subtitlemovieId", movieId)
+    const next = contentState.nextMovieId;
+    if(next === movieId){
+        contentState.setMovieId(movieId);
+        // contentState.setNextMovieId(null);
+        subFluentDebug("nextSubtitle",movieId);
+    }
+
+    startCueLogging(movieId, nativeCues, learningCues);
+});
 
 // --- TTML URL capture via page hook (pageScript) ---
 const PAGE_HOOK_SOURCE = "SubFluent";
-const downloadedTimedTextedTrackList = new Map<string, any>();
+
 
 // Listen for messages from the injected page hook
 window.addEventListener("message", async (ev) => {
@@ -13,29 +144,42 @@ window.addEventListener("message", async (ev) => {
     if (d?.source !== PAGE_HOOK_SOURCE) return;
 
     if (d?.type === "HOOK_READY") {
-        console.log("[SubFluent] page hook ready");
         return;
     }
 
     if (d?.type === "TTML_TEXT") {
-        const ttmlDocument = parseTtml(d.ttml)
-        const nttm = ttmlDocument.meta.nttm;
-        if(!nttm) return;
-        const k = nttm["nttm:movieID"] + d.langType;
-        if(!k) return;
-
-        const v = {
-            cues: ttmlDocument.cues,
-            styles: ttmlDocument.styles,
-            type: nttm["nttm:textType"]
+        if(!contentState.movieId) 
+            return;
+        let movieId = contentState.movieId;
+        if(contentState.isSubtitlesReady(movieId)){
+            subFluentDebug("isSubtitlesReady(movieId):", movieId);
+            if(contentState.nextMovieId){
+                movieId = contentState.nextMovieId;
+                subFluentDebug("isSubtitlesReady(nextmovieId):", movieId);
+            }
         }
-        downloadedTimedTextedTrackList.set(k, v);
-        console.log("[SubFluent] TrackList : ", downloadedTimedTextedTrackList)
+
+        const lang = d.langType;
+        const ttmlSubtitle = parseTtmlSubtitle(d.ttml)
+
+        contentState.setSubtitleForMovie(movieId, lang, ttmlSubtitle);
+        subFluentDebug("TTML_TEXT movieId:",movieId)
+        subFluentDebug("downloadedTimedTextedTrackList", contentState.getSubtitles())
         return;
     }
 
-    if(d?.type === "LOAD_SUBTITLE") {
-        console.log("[SubFluent] request to load subtitle for id:", d.trackId);
+    if(d?.type === "LICENSED_MANIFEST") {
+        if(!contentState.movieId){
+            contentState.setMovieId(d.movieId);
+            subFluentDebug("FirsttMovieID", d.movieId)
+        }
+        else{
+            contentState.setNextMovieId(d.movieId);
+            subFluentDebug("d.movieID",d.movieId,"nextMovieID", contentState.nextMovieId)
+        }
+
+
+        subFluentDebug("manifest", d.movieId);
         return;
     }
 });
@@ -99,7 +243,7 @@ function showOverlay() {
             };
             const msg: ExtMessage<typeof Msg.DICTATION_SEND> = { type: Msg.DICTATION_SEND, payload };
             chrome.runtime.sendMessage(msg, (response) => {
-                console.log("[SubFluent] received response from background:", response);
+                subFluentDebug("received response from background:", response);
                 if (response?.type === Msg.DICTATION_RESULT) {
                     const result = response.payload as DictationResult;
                     if (result.correct) {
