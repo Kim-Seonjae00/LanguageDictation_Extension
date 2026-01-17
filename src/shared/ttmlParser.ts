@@ -54,6 +54,11 @@ export type TtmlDocument = {
   cues: TtmlCue[];
 };
 
+export type TtmlSubtitle = {
+  cues: TtmlCue[];
+  styles: Record<string, TtmlStyle>;
+}
+
 export function parseTtml(ttml: string): TtmlDocument {
   const doc = new DOMParser().parseFromString(ttml, "text/xml");
 
@@ -177,6 +182,12 @@ export function parseTtml(ttml: string): TtmlDocument {
     .filter(isNotNull);
 
   return { meta, regions, styles, cues };
+}
+
+export function parseTtmlSubtitle(ttml: string):TtmlSubtitle{
+  const cues = parseTtml(ttml).cues;
+  const styles = parseTtml(ttml).styles;
+  return { cues,styles }
 }
 
 // 기존 함수는 이제 이렇게 얇게 유지 가능
