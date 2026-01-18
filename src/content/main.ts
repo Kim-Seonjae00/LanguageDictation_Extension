@@ -127,8 +127,9 @@ contentState.subscribeSubtitlesReady(({ movieId, bucket }) => {
     const next = contentState.nextMovieId;
     if(next === movieId){
         contentState.setMovieId(movieId);
-        // contentState.setNextMovieId(null);
+        contentState.setNextMovieId(null);
         subFluentDebug("nextSubtitle",movieId);
+        subFluentDebug("contenteState.nextMovieId: ", contentState.nextMovieId);
     }
 
     startCueLogging(movieId, nativeCues, learningCues);

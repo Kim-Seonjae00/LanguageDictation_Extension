@@ -78,7 +78,6 @@ export class ContentState {
     if(prev === next) return;
 
     if(prev){
-      this._downloadedTimedTextedTrackList.delete(prev);
       this._readyMovies.delete(prev);
     }
     this._nextMovieId = next;
