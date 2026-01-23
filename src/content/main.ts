@@ -92,9 +92,6 @@ function generateWindow(movieId:string, learningCuesRaw:CueLike[], nativeCuesRaw
 
         const key = ls+"::"+le;
 
-        let overlap = 0;
-
-
         if(!subtitleCueMap.has(key)){
             subtitleCueMap.set(key,{learn:[learningCue.text], native:[]});
         }else{
@@ -111,25 +108,31 @@ function generateWindow(movieId:string, learningCuesRaw:CueLike[], nativeCuesRaw
             
             const overlapStart = Math.max(ns, ls);
             const overlapEnd = Math.min(ne, le);
-            overlap = overlapEnd - overlapStart;
+            let overlap = overlapEnd - overlapStart;
 
             if(overlap > 0){
                 const lDuration = Math.max(le - ls,1e-16);
                 const nDuration = Math.max(ne - ns, 1e-6);
-
                 const lRatio = overlap / lDuration;
                 const nRatio = overlap / nDuration;
 
                 if(lRatio <= RATIO_MIN && nRatio <= RATIO_MIN) continue;
                 if(lRatio >= RATIO_MAX && nRatio >= RATIO_MAX){
+                    // L:N = 1:1
                     subtitleCueMap.get(key)?.native.push(nativeCue.text);
                 }else if(RATIO_MIN < lRatio && lRatio < RATIO_MAX){
-
+                    // L:N = N:1
+                    // le값만 변경
                 }else if(RATIO_MIN < nRatio && nRatio <RATIO_MAX){
-
-                }else if(){
-
+                    // L:N = 1:N
+                    // ne값만 변경
+                    subtitleCueMap.get(key)?.native.push(nativeCue.text);
+                }else{
+                    // L:N = N:M
                 }
+                //}else if((RATIO_MIN < lRatio && lRatio < RATIO_MAX) && (RATIO_MIN < nRatio && nRatio <RATIO_MAX)){
+                // L:N = N:M
+                //}
                 nativeCues.splice(j, 1);
             }else {
                 // C) "거의 맞닿은" 케이스(경계만 살짝 어긋남) 허용
