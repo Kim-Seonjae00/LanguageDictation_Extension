@@ -1,5 +1,5 @@
 // src/content/pageHook.ts
-import {setSubFluentLogLevel, subFluentDebug, subFluentError } from "../shared/util";
+import { setSubFluentLogLevel, subFluentDebug, subFluentError } from "../shared/util";
 setSubFluentLogLevel("DEBUG"); // 개발 중
 // setSubFluentLogLevel("INFO"); // 평소
 // setSubFluentLogLevel("WARN"); // 배포
@@ -23,6 +23,8 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
     const learningLang = "en";
     const nativeLang = "ko";
     const TEST_LANG = [learningLang, nativeLang];
+    const isWatch = () => location.pathname.startsWith("/watch/");
+
     let playerFacade: any = null; // raw Netflix player (live object)
 
     type PlayerFacade = {
@@ -174,6 +176,47 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
             iVa: p?.iVa,
         };
     }
+    
+    const post = (data: any) => {
+        window.postMessage({ source: SRC, ...data }, "*");
+    };
+
+    const isNoneTimedTextTrack = (t: any): boolean => {
+        if (!t) return false;
+
+        // Most reliable flags when present
+        if (t?.isNoneTrack === true) return true;
+        if (t?.noneTrack === true) return true;
+
+        const id = String(t?.trackId || "");
+        // Some titles include explicit NONE token
+        if (id.includes("NONE") || id.includes(";NONE;")) return true;
+
+        // displayName varies by locale: 끄기 / Off / None / 자막 끄기
+        const name = String(t?.displayName || "");
+        if (/(끄기|off|none)/i.test(name)) return true;
+
+        return false;
+    };
+
+    const initializeTextTrack = (trackList: any[]) => {
+        // Guard: playerFacade must exist
+        if (!playerFacade?.setTimedTextTrack) return;
+        if (!Array.isArray(trackList) || trackList.length === 0) return;
+
+        const noneTrack = trackList.find(isNoneTimedTextTrack) || null;
+        if (!noneTrack) {
+            subFluentDebug("[initializeTextTrack] NONE track not found");
+            return;
+        }
+
+        try {
+            playerFacade.setTimedTextTrack(noneTrack);
+        } catch (e) {
+            subFluentError("[initializeTextTrack] setTimedTextTrack(NONE) failed:", e);
+        }
+    };
+
     // pageHook.ts (page world)
     // ===== 1) 공용 폴링 유틸 =====
     function pollUntil<T>(getter: () => T | null | undefined | false, label: string): Promise<T> {
@@ -200,59 +243,115 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
         });
     }
 
-    // ===== 3) 메인: appContext -> videoPlayer -> sessionId -> player =====
-    // NOTE: 회차 전환 등으로 player를 다시 잡아야 할 때, 연속 호출로 중복 폴링/중복 콜백이 발생할 수 있음.
-    // page world 전역 플래그로 "재초기화 진행 중"이면 스킵한다.
     async function initPlayerChain(callback: () => void) {
         const ns = (window as any)[PAGE_NS];
         ns.hooks ??= {};
-
-        // 중복 재초기화 방지 (fire-and-forget 재호출 대비)
+        
         if (ns.hooks.initPlayerChainInFlight) {
             subFluentDebug("initPlayerChain already in-flight. skip.");
             return null;
         }
-
+        
         ns.hooks.initPlayerChainInFlight = true;
         ns.hooks.initPlayerChainInFlightAt = Date.now();
-
+        
         try {
-            // A) appContext
             const appContext = await pollUntil<any>(() => {
                 const netflix = (window as any).netflix;
                 return netflix?.appContext;
             }, "appContext");
-
-            // B) videoPlayer (appContext 있어도 videoPlayer가 늦게 생길 수 있음)
+            
             const videoPlayer = await pollUntil<any>(() => {
                 return appContext?.state?.playerApp?.getAPI?.()?.videoPlayer;
             }, "videoPlayer");
-
-            // C) sessionId (재생 세션 생길 때까지)
+            
             const sessionId = await pollUntil<string>(() => {
                 return videoPlayer?.getAllPlayerSessionIds?.()?.[0];
             }, "sessionId");
-
-            // D) player (sessionId로 player 인스턴스가 나올 때까지)
+            
             const player = await pollUntil<any>(() => {
                 return videoPlayer?.getVideoPlayerBySessionId?.(sessionId);
             }, "player");
-
+            
+            const trackList = await pollUntil<any[]>(() => {
+                return player?.getTimedTextTrackList?.();
+            }, "trackList");
+            
             playerFacade = createPlayerFacade(player);
+
+            // Initialize to NONE(Off/끄기) once playerFacade is ready
+            initializeTextTrack(trackList);
+            post({ type: "PLAYER_READY", movieId: playerFacade.getMovieId?.() });
             callback();
+            
+            // ---- start monitoring (singleton) ----
+            if (!ns.hooks.monitoringTimer) {
+                ns.hooks.lastReinitAt ??= 0;
+
+                ns.hooks.monitoringTimer = setInterval(() => {
+                    try {
+                        if (!playerFacade) return;
+
+                        const notReady = playerFacade.getReady?.() === false;
+
+                        // 쿨다운: 너무 자주 재init 방지
+                        if (notReady) {
+                            const now = Date.now();
+                            if (now - ns.hooks.lastReinitAt < 1500) return;
+                            ns.hooks.lastReinitAt = now;
+
+                            subFluentDebug("[monitor] player not ready -> reinit");
+                            initPlayerChain(callback);
+                        }
+                    } catch (e) {
+                        subFluentError("[monitor] error", e);
+                    }
+                }, 200); // 100ms는 너무 빡셈. 200~500ms 추천
+            }
+
             return playerFacade;
         } catch (e) {
             subFluentError("initPlayerChain failed:", e);
             return null;
         } finally {
-            // 반드시 해제 (실패/성공 모두)
             ns.hooks.initPlayerChainInFlight = false;
         }
     }
 
-    function sendMessageToContentScript() {
-        const post = (data: any) => window.postMessage({ source: SRC, ...data }, "*");
+    async function getDownloadableTrackList(): Promise<void> {
+        const trackList = await pollUntil<any[]>(() => {
+            const list = playerFacade?.getTimedTextTrackList?.();
+            return Array.isArray(list) && list.length > 0 ? list : null;
+        }, "TTML tracks");
 
+        const fiteredTracks = trackList?.filter((track: any) => {
+            const lang = track?.bcp47?.toLowerCase() || "";
+            return TEST_LANG.includes(lang);
+        });
+
+        requestTTMLForTrack(fiteredTracks, trackList);
+    }
+
+    function requestTTMLForTrack(trackList: any[], allTrackList: any[]) {
+        if (!playerFacade?.setTimedTextTrack) {
+            subFluentDebug("[requestTTMLForTrack] playerFacade not ready. skip.");
+            return;
+        }
+        if (!trackList?.length) {
+            subFluentDebug("no matching timed text tracks found");
+            return;
+        }
+        for (const track of trackList) {
+            try {
+                playerFacade.setTimedTextTrack(track);
+            } catch (e) {
+                subFluentError("setTimedTextTrack failed:", e);
+            }
+        }
+        initializeTextTrack(allTrackList);
+    }
+
+    function sendMessageToContentScript() {
         const looksLikeTtml = (text: string): boolean => {
             const head = text.trimStart().slice(0, 200).toLowerCase();
             return head.startsWith("<tt") || head.includes("<tt ") || head.includes("<tt>");
@@ -285,41 +384,27 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
             }
         };
 
-        const getMainContentViewableId = (rawUrl: string): string | null => {
-            try {
-                const u = new URL(rawUrl, window.location.href);
-                return u.searchParams.get("mainContentViewableId");
-            } catch {
-                return null;
+        (async function initHook() {
+            const ns = (window as any)[PAGE_NS];
+            ns.hooks ??= {};
+            if (ns.hooks.xhrHookInstalled) {
+                return;
             }
-        };
+            ns.hooks.xhrHookInstalled = true;
 
-        (async function initHook(callback: () => Promise<void>) {
-            const hookingSettings: Record<"ttmlXhrHook" | "licensedManifestXhrHook", HookSetting> = {
+            // Keep original methods only once (avoid wrapper-of-wrapper)
+            ns.hooks.origXhrOpen ??= XMLHttpRequest.prototype.open;
+            ns.hooks.origXhrSend ??= XMLHttpRequest.prototype.send;
+
+            const hookingSettings: Record<"ttmlXhrHook", HookSetting> = {
                 ttmlXhrHook: {
                     host: ".nflxvideo.net",
                     pathIncludes: "/",
                     requiredParams: ["o", "v", "e", "t"],
                 },
-                licensedManifestXhrHook: {
-                    host: "www.netflix.com",
-                    pathIncludes: "/msl/playapi/cadmium/licensedmanifest/1",
-                    requiredParams: [
-                        "reqAttempt",
-                        "reqName",
-                        "reqId",
-                        "mainContentViewableId",
-                        "clienttype",
-                        "uiversion",
-                        "browsername",
-                        "browserversion",
-                        "osname",
-                        "osversion",
-                    ],
-                },
             };
 
-            const origOpen = XMLHttpRequest.prototype.open;
+            const origOpen = (window as any)[PAGE_NS].hooks.origXhrOpen as typeof XMLHttpRequest.prototype.open;
             XMLHttpRequest.prototype.open = function (
                 this: XMLHttpRequest,
                 method: string,
@@ -332,101 +417,58 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
                 return origOpen.call(this, method, url as any, async as any, user as any, password as any);
             };
 
-            const origSend = XMLHttpRequest.prototype.send;
+            function extractNumericId(pathname: string): string | null {
+                const m = pathname.match(/(\d+)/);
+                return m ? m[1] : null;
+            }
+
+            const origSend = (window as any)[PAGE_NS].hooks.origXhrSend as typeof XMLHttpRequest.prototype.send;
             XMLHttpRequest.prototype.send = function (this: XMLHttpRequest, body?: Document | BodyInit | null) {
-                this.addEventListener("load", () => {
-                    try {
-                        const url = String((this as any).__subfluent_url || "");
-                        const ct = this.getResponseHeader("content-type") || "";
+                // Avoid attaching multiple load listeners if send wrapper is ever re-entered
+                if (!(this as any).__subfluent_loadAttached) {
+                    (this as any).__subfluent_loadAttached = true;
 
-                        // 1) Licensed Manifest hook (episode start / switching)
-                        if (isHookingUrl(url, hookingSettings.licensedManifestXhrHook)) {
-                            if (!playerFacade?.getReady?.()) {
-                                subFluentDebug("player not ready yet. try re-init player chain.");
-                                // fire-and-forget: in-flight 가드가 있으니 연속 호출되어도 1번만 돈다.
-                                initPlayerChain(getDownloadableTrackList);
-                            }
-                            const movieId = getMainContentViewableId(url);
-                            const respText = typeof (this as any).responseText === "string" ? (this as any).responseText : "";
-                            post({
-                                type: "LICENSED_MANIFEST",
-                                url,
-                                movieId,
-                                status: (this as any).status,
-                                responseText: respText,
-                            });
-                            return;
-                        }
+                    this.addEventListener("load", () => {
+                        try {
+                            const url = String((this as any).__subfluent_url || "");
+                            const ct = this.getResponseHeader("content-type") || "";
 
-                        // 2) TTML hook (timed text)
-                        if (isHookingUrl(url, hookingSettings.ttmlXhrHook)) {
-                            const isXml = ct.includes("text/xml") || ct.includes("application/xml");
-                            if (isXml) {
-                                const maybeText = typeof (this as any).responseText === "string" ? (this as any).responseText : "";
-                                const bcp47 = getLangFromTtml(maybeText)
-                                const isBcp47Match = TEST_LANG.includes(bcp47 ?? "");
+                            // 2) TTML hook (timed text)
+                            if (isHookingUrl(url, hookingSettings.ttmlXhrHook)) {
+                                const isXml = ct.includes("text/xml") || ct.includes("application/xml");
+                                if (isXml) {
+                                    const maybeText = typeof (this as any).responseText === "string" ? (this as any).responseText : "";
+                                    const bcp47 = getLangFromTtml(maybeText)
+                                    const isBcp47Match = TEST_LANG.includes(bcp47 ?? "");
+                                    const movieId = playerFacade?.getMovieId?.()?playerFacade.getMovieId?.():extractNumericId(location.pathname);
 
-                                if (maybeText && looksLikeTtml(maybeText) && isBcp47Match) {
-                                    const langType = bcp47 == learningLang ? "learning" : "native";
-                                    subFluentDebug("ttml Hooking post", langType);
-                                    post({ type: "TTML_TEXT", langType: langType, ttml: maybeText });
-                                    return;
+                                    if (maybeText && looksLikeTtml(maybeText) && isBcp47Match && isWatch()) {
+                                        const langType = bcp47 == learningLang ? "learning" : "native";
+                                        post({ type: "TTML_TEXT", langType: langType, ttml: maybeText, movieId: movieId });
+                                        return;
+                                    }
+                                    // Remove risky re-initialization from every TTML response (it can run before playerFacade exists).
+                                    // if(playerFacade != null && playerFacade.getTimedTextTrackList != null){
+                                    //     initializeTextTrack(playerFacade.getTimedTextTrackList?.());
+                                    // }
                                 }
                             }
+                        } catch (e) {
+                            subFluentError("SubFluent: error in XHR hook : ", e);
                         }
-                    } catch (e) {
-                        subFluentError("SubFluent: error in XHR hook : ", e);
-                    }
-                });
+                    });
+                }
 
                 return origSend.call(this, body as any);
             };
-            post({ type: "HOOK_READY", hooks: ["TTML_XHR", "LICENSEDMANIFEST_XHR"] });
-            try {
-                await callback();
-            } catch (e) {
-                subFluentError("initHook callback failed:", e);
-            }
-        }(getDownloadableTrackList));
+        }());
 
         // expose for initPlayerChain callback (so we can trigger it once player is ready)
         (window as any)[PAGE_NS].hooks.getDownloadableTrackList = getDownloadableTrackList;
-
-        async function getDownloadableTrackList(): Promise<void> {
-            const trackList = await pollUntil<any[]>(() => {
-                const list = playerFacade?.getTimedTextTrackList?.();
-                return Array.isArray(list) && list.length > 0 ? list : null;
-            }, "TTML tracks");
-
-            const fiteredTracks = trackList?.filter((track: any) => {
-                const lang = track?.bcp47?.toLowerCase() || "";
-                return TEST_LANG.includes(lang);
-            });
-            subFluentDebug("filtered timed text tracks:", fiteredTracks);
-            requestTTMLForTrack(fiteredTracks);
-        }
-
-        function requestTTMLForTrack(trackList: any[]) {
-            if (!trackList?.length) {
-                subFluentDebug("no matching timed text tracks found");
-                return;
-            }
-
-            for (const track of trackList) {
-                try {
-                    playerFacade.setTimedTextTrack(track);
-                    subFluentDebug("setTimedTrack", track);
-                } catch (e) {
-                    subFluentError("setTimedTextTrack failed:", e);
-                }
-            }
-        }
     }
 
-    // 1) Install XHR hooks ASAP (avoid missing the very first licensedManifest on initial load)
+    // 1) Initialize player separately; once ready, kick track list fetch if available
     sendMessageToContentScript();
-
-    // 2) Initialize player separately; once ready, kick track list fetch if available
-    initPlayerChain(() => {
-    });
+    initPlayerChain(getDownloadableTrackList);
 })();
+

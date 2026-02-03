@@ -21,15 +21,472 @@ function getVideoEl(): HTMLVideoElement | null {
 
 let stopCueLogging: (() => void) | null = null;
 
+// ===== [SF ADDED] Dictation overlay (v1) =====
+let sfDictationMode = false; // default OFF
+let sfOverlay: HTMLDivElement | null = null;
+let sfInput: HTMLInputElement | null = null;
+let sfExpectedText = "";
+let sfNativeText = "";
+let sfLastDictationKey: string | null = null;
+
+let sfDictationVideo: HTMLVideoElement | null = null;
+
+// ===== [SF ADDED] Dictation focus + keyboard guard =====
+let sfFocusGuardOn = false;
+let sfFocusGuardTimer: number | null = null;
+
+function enableDictationFocusGuard() {
+    if (sfFocusGuardOn) return;
+    sfFocusGuardOn = true;
+
+    const onFocusIn = (ev: FocusEvent) => {
+        if (!sfOverlay || sfOverlay.style.display === "none") return;
+        const target = ev.target as Node | null;
+        if (!target) return;
+        if (sfOverlay && !sfOverlay.contains(target)) {
+            setTimeout(() => sfInput?.focus(), 0);
+        }
+    };
+
+    const onPointerDownCapture = (ev: Event) => {
+        if (!sfOverlay || sfOverlay.style.display === "none") return;
+        const target = ev.target as Node | null;
+        if (!target) return;
+        // overlay 뒤(넷플릭스) 클릭/포커스 훔치기 방지
+        if (sfOverlay && !sfOverlay.contains(target)) {
+            ev.preventDefault();
+            ev.stopPropagation();
+        }
+    };
+
+    // NOTE: capture 단계에서 무조건 stopPropagation 하면 input까지 키가 못 가는 케이스가 있음.
+    // 그래서 "input에 포커스가 없는 경우"에만 Netflix 단축키를 강하게 차단한다.
+    const onKeyCapture = (ev: KeyboardEvent) => {
+        if (!sfOverlay || sfOverlay.style.display === "none") return;
+
+        const ae = document.activeElement as HTMLElement | null;
+        const isInputFocused = !!(ae && (ae === sfInput || (sfOverlay.contains(ae) && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA"))));
+
+        // Esc는 어디서든 Netflix로 전달 차단 (우리 overlay 닫기)
+        if (ev.key === "Escape") {
+            ev.preventDefault();
+            ev.stopPropagation();
+            return;
+        }
+
+        // input에 포커스가 없으면 Netflix 단축키/컨트롤을 완전히 차단
+        if (!isInputFocused) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            return;
+        }
+
+        // input 포커스일 때는 타이핑을 보장하기 위해 기본 전파는 두되,
+        // Netflix 쪽에서 keyup/keydown으로 컨트롤을 훔치는 케이스가 있으면 아래 한 줄을 켜서 실험 가능:
+        // ev.stopPropagation();
+    };
+
+    const onVisibility = () => {
+        if (!sfOverlay || sfOverlay.style.display === "none") return;
+        setTimeout(() => sfInput?.focus(), 0);
+    };
+
+    (window as any).__sf_onFocusIn = onFocusIn;
+    (window as any).__sf_onPointerDownCapture = onPointerDownCapture;
+    (window as any).__sf_onKeyCapture = onKeyCapture;
+    (window as any).__sf_onVisibility = onVisibility;
+
+    document.addEventListener("focusin", onFocusIn, true);
+    document.addEventListener("pointerdown", onPointerDownCapture, true);
+    document.addEventListener("mousedown", onPointerDownCapture, true);
+    document.addEventListener("touchstart", onPointerDownCapture, true);
+    window.addEventListener("keydown", onKeyCapture, true);
+    window.addEventListener("keyup", onKeyCapture, true);
+    document.addEventListener("visibilitychange", onVisibility, true);
+
+    // 일부 레이어가 focusin 없이 activeElement만 바꾸는 케이스 방어
+    sfFocusGuardTimer = window.setInterval(() => {
+        if (!sfOverlay || sfOverlay.style.display === "none") return;
+        if (!sfInput) return;
+        const ae = document.activeElement;
+        if (ae && sfOverlay.contains(ae)) return;
+        sfInput.focus();
+    }, 250);
+}
+
+function disableDictationFocusGuard() {
+    if (!sfFocusGuardOn) return;
+    sfFocusGuardOn = false;
+
+    const onFocusIn = (window as any).__sf_onFocusIn as ((e: FocusEvent) => void) | undefined;
+    const onPointerDownCapture = (window as any).__sf_onPointerDownCapture as ((e: Event) => void) | undefined;
+    const onKeyCapture = (window as any).__sf_onKeyCapture as ((e: KeyboardEvent) => void) | undefined;
+    const onVisibility = (window as any).__sf_onVisibility as (() => void) | undefined;
+
+    if (onFocusIn) document.removeEventListener("focusin", onFocusIn, true);
+    if (onPointerDownCapture) {
+        document.removeEventListener("pointerdown", onPointerDownCapture, true);
+        document.removeEventListener("mousedown", onPointerDownCapture, true);
+        document.removeEventListener("touchstart", onPointerDownCapture, true);
+    }
+    if (onKeyCapture) {
+        window.removeEventListener("keydown", onKeyCapture, true);
+        window.removeEventListener("keyup", onKeyCapture, true);
+    }
+    if (onVisibility) document.removeEventListener("visibilitychange", onVisibility, true);
+
+    (window as any).__sf_onFocusIn = undefined;
+    (window as any).__sf_onPointerDownCapture = undefined;
+    (window as any).__sf_onKeyCapture = undefined;
+    (window as any).__sf_onVisibility = undefined;
+
+    if (sfFocusGuardTimer != null) {
+        clearInterval(sfFocusGuardTimer);
+        sfFocusGuardTimer = null;
+    }
+}
+// ===== [SF ADDED] end =====
+
+function ensureDictationOverlay() {
+    if (sfOverlay) return;
+
+    sfOverlay = document.createElement("div");
+    sfOverlay.id = "__subfluent_dictation_overlay";
+    sfOverlay.style.position = "fixed";
+    sfOverlay.style.inset = "0";
+    sfOverlay.style.zIndex = "2147483647";
+    sfOverlay.style.background = "rgba(0,0,0,0.55)";
+    (sfOverlay.style as any).backdropFilter = "blur(6px)";
+    sfOverlay.style.display = "flex";
+    sfOverlay.style.alignItems = "center";
+    sfOverlay.style.justifyContent = "center";
+    sfOverlay.style.pointerEvents = "auto";
+    // Accessibility / focus trap help
+    sfOverlay.tabIndex = -1;
+    sfOverlay.setAttribute("role", "dialog");
+    sfOverlay.setAttribute("aria-modal", "true");
+
+    const box = document.createElement("div");
+    box.style.width = "min(760px, 92vw)";
+    box.style.background = "linear-gradient(180deg, rgba(28,28,30,0.98), rgba(18,18,20,0.98))";
+    box.style.border = "1px solid rgba(255,255,255,0.10)";
+    box.style.borderRadius = "16px";
+    box.style.padding = "18px 18px 16px";
+    box.style.boxShadow = "0 16px 60px rgba(0,0,0,0.55)";
+    box.style.color = "#fff";
+    box.style.fontFamily = "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial";
+
+    // --- top bar ---
+    const title = document.createElement("div");
+    title.textContent = "SubFluent Dictation";
+    title.style.fontSize = "16px";
+    title.style.fontWeight = "750";
+    title.style.marginBottom = "0px";
+
+    const badge = document.createElement("span");
+    badge.textContent = "DICTATION";
+    badge.style.fontSize = "11px";
+    badge.style.letterSpacing = "0.08em";
+    badge.style.padding = "6px 10px";
+    badge.style.borderRadius = "999px";
+    badge.style.background = "rgba(255,255,255,0.10)";
+    badge.style.border = "1px solid rgba(255,255,255,0.14)";
+    badge.style.opacity = "0.95";
+
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.textContent = "✕";
+    closeBtn.style.width = "36px";
+    closeBtn.style.height = "36px";
+    closeBtn.style.borderRadius = "10px";
+    closeBtn.style.border = "1px solid rgba(255,255,255,0.12)";
+    closeBtn.style.background = "rgba(255,255,255,0.08)";
+    closeBtn.style.color = "#fff";
+    closeBtn.style.cursor = "pointer";
+    closeBtn.style.fontSize = "14px";
+    closeBtn.style.lineHeight = "1";
+
+    closeBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        hideDictationOverlay(true);
+    });
+
+    const titleWrap = document.createElement("div");
+    titleWrap.style.display = "flex";
+    titleWrap.style.alignItems = "center";
+    titleWrap.style.gap = "10px";
+    titleWrap.appendChild(badge);
+    titleWrap.appendChild(title);
+
+    const topBar = document.createElement("div");
+    topBar.style.display = "flex";
+    topBar.style.alignItems = "center";
+    topBar.style.justifyContent = "space-between";
+    topBar.style.gap = "12px";
+    topBar.style.marginBottom = "10px";
+    topBar.appendChild(titleWrap);
+    topBar.appendChild(closeBtn);
+
+    const hint = document.createElement("div");
+    hint.id = "__sf_hint";
+    hint.textContent = "Type what you hear. Enter = submit · Esc = close";
+    hint.style.fontSize = "13px";
+    hint.style.opacity = "0.82";
+    hint.style.marginBottom = "12px";
+
+    // native hint line (optional)
+    const nativeLine = document.createElement("div");
+    nativeLine.id = "__sf_native";
+    nativeLine.style.fontSize = "13px";
+    nativeLine.style.opacity = "0.78";
+    nativeLine.style.marginBottom = "10px";
+    nativeLine.style.color = "rgba(255,255,255,0.85)";
+
+    const expected = document.createElement("div");
+    expected.id = "__sf_expected";
+    expected.style.fontSize = "14px";
+    expected.style.opacity = "0.92";
+    expected.style.marginBottom = "10px";
+    expected.style.display = "none";
+    expected.style.padding = "10px 12px";
+    expected.style.borderRadius = "12px";
+    expected.style.border = "1px solid rgba(255,255,255,0.10)";
+    expected.style.background = "rgba(255,255,255,0.06)";
+
+    const result = document.createElement("div");
+    result.id = "__sf_result";
+    result.style.fontSize = "14px";
+    result.style.marginTop = "10px";
+    result.style.paddingTop = "10px";
+    result.style.borderTop = "1px solid rgba(255,255,255,0.10)";
+
+    const stateLine = document.createElement("div");
+    stateLine.id = "__sf_state";
+    stateLine.style.marginBottom = "6px";
+
+    const answerLine = document.createElement("div");
+    answerLine.id = "__sf_answer";
+
+    sfInput = document.createElement("input");
+    sfInput.id = "__sf_input";
+    sfInput.type = "text";
+    sfInput.placeholder = "Type here...";
+    sfInput.style.width = "100%";
+    sfInput.style.fontSize = "18px";
+    sfInput.style.padding = "12px 14px";
+    sfInput.style.borderRadius = "12px";
+    sfInput.style.border = "1px solid rgba(255,255,255,0.14)";
+    sfInput.style.outline = "0";
+    sfInput.style.boxSizing = "border-box";
+    sfInput.style.background = "rgba(255,255,255,0.08)";
+    sfInput.style.color = "#fff";
+    sfInput.style.caretColor = "#fff";
+    (sfInput.style as any).backdropFilter = "blur(6px)";
+
+    sfInput.addEventListener("keydown", (e) => {
+        if (!sfInput) return;
+
+        if (e.key === "Escape") {
+            hideDictationOverlay(true);
+            return;
+        }
+
+        if (e.key === "Enter") {
+            const actual = sfInput.value;
+            const expectedText = sfExpectedText;
+            if (!expectedText) return;
+
+            const payload: SendDictation = { expected: expectedText, actual };
+            const msg: ExtMessage<typeof Msg.DICTATION_SEND> = { type: Msg.DICTATION_SEND, payload };
+
+            chrome.runtime.sendMessage(msg, (response) => {
+                const stateEl = document.getElementById("__sf_state");
+                const expectedEl = document.getElementById("__sf_expected");
+                const answerEl = document.getElementById("__sf_answer");
+                if (!stateEl || !expectedEl || !answerEl) return;
+
+                if (response?.type === Msg.DICTATION_RESULT) {
+                    const result = response.payload as DictationResult;
+                    expectedEl.style.display = "block";
+                    expectedEl.innerHTML = `Expected: <span style="color:#8ef; font-weight:700;">${escapeHtml(result.sendDictation.expected)}</span>`;
+
+                    if (result.correct) {
+                        stateEl.innerHTML = "✅ Correct";
+                        answerEl.innerHTML = `<span style="color:#a6ff9b;">${escapeHtml(result.sendDictation.actual)}</span>`;
+
+                        // 성공하면 overlay 닫고 재생 재개
+                        hideDictationOverlay(false);
+                    } else {
+                        stateEl.innerHTML = "❌ Wrong";
+
+                        const wrongIndices = new Set<number>(result.wrong as any);
+                        const words = result.sendDictation.actual.trim().split(/\s+/);
+                        const highlighted = words
+                            .map((w, idx) => (wrongIndices.has(idx) ? `<span style="color:#ff6b6b; font-weight:700;">${escapeHtml(w)}</span>` : escapeHtml(w)))
+                            .join(" ");
+
+                        answerEl.innerHTML = highlighted;
+                    }
+                }
+            });
+
+            sfInput.value = "";
+            return;
+        }
+    });
+
+    result.appendChild(stateLine);
+    result.appendChild(answerLine);
+
+    box.appendChild(topBar);
+    box.appendChild(hint);
+    box.appendChild(nativeLine);
+    box.appendChild(sfInput);
+    box.appendChild(expected);
+    box.appendChild(result);
+
+    sfOverlay.appendChild(box);
+    document.body.appendChild(sfOverlay);
+}
+
+function showDictationOverlay(expected: string, native: string, key: string, video: HTMLVideoElement | null) {
+    ensureDictationOverlay();
+    if (!sfOverlay || !sfInput) return;
+
+    // 동일 클러스터에 대해 중복 호출 방지
+    if (sfLastDictationKey === key && sfOverlay.style.display !== "none") return;
+    sfLastDictationKey = key;
+
+    sfExpectedText = expected;
+    sfNativeText = native;
+    sfDictationVideo = video;
+
+    // reset UI
+    const stateEl = document.getElementById("__sf_state");
+    const expectedEl = document.getElementById("__sf_expected");
+    const answerEl = document.getElementById("__sf_answer");
+    const nativeEl = document.getElementById("__sf_native");
+
+    if (stateEl) stateEl.innerHTML = "";
+    if (answerEl) answerEl.innerHTML = "";
+    if (expectedEl) {
+        expectedEl.innerHTML = "";
+        expectedEl.style.display = "none";
+    }
+    if (nativeEl) nativeEl.textContent = sfNativeText ? `Hint (native): ${sfNativeText}` : "";
+
+    // pause video while dictating
+    try {
+        video?.pause?.();
+    } catch {
+        // ignore
+    }
+
+    sfOverlay.style.display = "flex";
+    enableDictationFocusGuard();
+    setTimeout(() => sfInput?.focus(), 0);
+}
+
+function hideDictationOverlay(keepPaused: boolean) {
+    if (!sfOverlay) return;
+    disableDictationFocusGuard();
+    sfOverlay.style.display = "none";
+
+    if (!keepPaused) {
+        try {
+            sfDictationVideo?.play?.();
+        } catch {
+            // ignore
+        }
+    }
+}
+
+// ===== [SF ADDED] Dictation toggle button (bottom-right) =====
+let sfToggleBtn: HTMLButtonElement | null = null;
+
+function ensureDictationToggleButton() {
+    if (sfToggleBtn) return;
+
+    sfToggleBtn = document.createElement("button");
+    sfToggleBtn.id = "__subfluent_dictation_toggle";
+    sfToggleBtn.type = "button";
+
+    // Position
+    sfToggleBtn.style.position = "fixed";
+    sfToggleBtn.style.right = "16px";
+    sfToggleBtn.style.bottom = "16px";
+    sfToggleBtn.style.zIndex = "2147483647";
+
+    // Look
+    sfToggleBtn.style.padding = "10px 12px";
+    sfToggleBtn.style.borderRadius = "999px";
+    sfToggleBtn.style.border = "0";
+    sfToggleBtn.style.cursor = "pointer";
+    sfToggleBtn.style.fontSize = "13px";
+    sfToggleBtn.style.fontWeight = "700";
+    sfToggleBtn.style.boxShadow = "0 8px 28px rgba(0,0,0,0.35)";
+
+    // Avoid Netflix focus outlines weirdness
+    sfToggleBtn.style.outline = "none";
+
+    const setLabel = () => {
+        if (!sfToggleBtn) return;
+        sfToggleBtn.textContent = sfDictationMode ? "Dictation: ON" : "Dictation: OFF";
+        sfToggleBtn.style.background = sfDictationMode ? "rgba(140,255,160,0.95)" : "rgba(255,255,255,0.92)";
+        sfToggleBtn.style.color = sfDictationMode ? "#0b2a12" : "#111";
+    };
+
+    setLabel();
+
+    sfToggleBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        sfDictationMode = !sfDictationMode;
+        subFluentInfo("[DictationMode]", sfDictationMode ? "ON" : "OFF");
+
+        if (!sfDictationMode) {
+            // 끌 때는 overlay 숨기고 재생 재개
+            hideDictationOverlay(false);
+            sfLastDictationKey = null;
+        }
+
+        setLabel();
+    });
+
+    document.body.appendChild(sfToggleBtn);
+}
+
+// Create early (SPA-safe)
+if (document.body) {
+    ensureDictationToggleButton();
+} else {
+    window.addEventListener("DOMContentLoaded", () => ensureDictationToggleButton(), { once: true });
+}
+// ===== [SF ADDED] end =====
+
+// ===== [SF ADDED] escapeHtml =====
+function escapeHtml(s: string) {
+    return String(s ?? "").replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]!));
+}
+// ===== [SF ADDED] end =====
+
 function startCueLogging(movieId: string, subtitleMap: Map<string, CueData>) {
     // stop previous loop
     stopCueLogging?.();
     subFluentDebug("startCueLogging for movieId:", movieId);
-    subFluentDebug("learningSubtitle:", subtitleMap);
+
     let running = true;
     let lastVideo: HTMLVideoElement | null = null;
     let lastT = -1;
     let lastLearningKey: string | null = null;
+
+    // ===== [SF ADDED] dictation uses previous cue =====
+    let prevClusterKey: string | null = null;
+    let prevLearnText: string = "";
+    let prevNativeText: string = "";
+    // ===== [SF ADDED] end =====
 
     const clusters = buildClusters(subtitleMap);
     let clusterPtr = 0;
@@ -46,8 +503,9 @@ function startCueLogging(movieId: string, subtitleMap: Map<string, CueData>) {
     }
 
     const normalizeText = (s: string) => s.replace(/\s+/g, " ").trim();
-
+    const isWatchPage = (): boolean => location.pathname.startsWith("/watch/");
     const tick = () => {
+        //if(isWatchPage() === false) return;
         if (!running) return;
 
         const video = getVideoEl();
@@ -62,6 +520,12 @@ function startCueLogging(movieId: string, subtitleMap: Map<string, CueData>) {
             lastLearningKey = null;
             clusterPtr = 0;
             lastT = -1;
+
+            // ===== [SF ADDED] reset prev cue tracking =====
+            prevClusterKey = null;
+            prevLearnText = "";
+            prevNativeText = "";
+            // ===== [SF ADDED] end =====
         }
 
         const t = video.currentTime;
@@ -70,6 +534,12 @@ function startCueLogging(movieId: string, subtitleMap: Map<string, CueData>) {
         if (lastT >= 0 && t < lastT - 0.5) {
             clusterPtr = 0;
             lastLearningKey = null;
+
+            // ===== [SF ADDED] reset prev cue tracking on seek-back =====
+            prevClusterKey = null;
+            prevLearnText = "";
+            prevNativeText = "";
+            // ===== [SF ADDED] end =====
         }
         lastT = t;
 
@@ -79,22 +549,40 @@ function startCueLogging(movieId: string, subtitleMap: Map<string, CueData>) {
             // 아직 해당 클러스터 시작 전이면 대기
             if (t < c.ls) break;
 
-            // 클러스터 구간 진입(처음 1번만)
-            if (t >= c.ls && t < c.le) {
-                // 중복 로그 방지(선택): key로 막기
-                if (lastLearningKey !== c.key) {
-                    lastLearningKey = c.key;
-
-                    subFluentInfo(
-                        "L:", normalizeText(c.learn.join(" ")),
-                        "N:", normalizeText(c.native.join(" "))
-                    );
-                }
-                break; // 한 tick에 하나만
+            // 이미 끝난 클러스터면 다음으로
+            if (t >= c.le) {
+                clusterPtr++;
+                continue;
             }
 
-            // 이미 지난 클러스터면 다음으로
-            clusterPtr++;
+            // 현재 클러스터 구간 진입: c.ls <= t < c.le
+            if (lastLearningKey !== c.key) {
+                lastLearningKey = c.key;
+
+                const learnText = normalizeText(c.learn.join(" "));
+                const nativeText = normalizeText(c.native.join(" "));
+
+                subFluentInfo(
+                    "L:", learnText,
+                    "N:", nativeText
+                );
+
+                // ===== [SF ADDED] dictation trigger (use previous cue) =====
+                if (sfDictationMode) {
+                    // 다음 대사 시작 시점에, 직전 대사를 받아쓰기
+                    if (prevClusterKey && prevLearnText) {
+                        showDictationOverlay(prevLearnText, prevNativeText, prevClusterKey, video);
+                    }
+                }
+
+                // 다음 전환을 위해 현재를 prev로 저장
+                prevClusterKey = c.key;
+                prevLearnText = learnText;
+                prevNativeText = nativeText;
+                // ===== [SF ADDED] end =====
+            }
+
+            break; // 한 tick에 하나만 처리
         }
 
         requestAnimationFrame(tick);
@@ -104,24 +592,18 @@ function startCueLogging(movieId: string, subtitleMap: Map<string, CueData>) {
 
     stopCueLogging = () => {
         running = false;
+        hideDictationOverlay(false);
+        sfLastDictationKey = null;
+        prevClusterKey = null;
+        prevLearnText = "";
+        prevNativeText = "";
+        subFluentDebug("stopCueLogging for movieId:", movieId);
     };
 }
 
 function generateWindow(movieId: string, learningCuesRaw: CueLike[], nativeCuesRaw: CueLike[], callback: Function) {
-    const MatchState = {
-        OneToOne: "OneToOne",
-        OneToN: "OneToN",
-        NToOne: "NToOne",
-        NToM: "NToM",
-        NoMatch: "NoMatch",
-    } as const;
-    type MatchState = typeof MatchState[keyof typeof MatchState];
-
-
     const EPS = 0.020;
-    const RATIO_MIN = 0.35;
-    const RATIO_MAX = 0.70;
-
+    const RATIO_MIN = 0.38;
 
     const normalizeText = (s: string) => s.replace(/\s+/g, " ").trim();
 
@@ -130,14 +612,10 @@ function generateWindow(movieId: string, learningCuesRaw: CueLike[], nativeCuesR
     const subtitleCueMap = new Map<string, CueData>();
 
     for (let i = 0; i < learningCues.length; i++) {
-        let state: MatchState = "OneToOne";
-
         const learningCue = learningCues[i];
 
         const ls = learningCue.start;
-        let le = learningCue.end;
-        let lastNs = 0;
-        let lastNe = 0;
+        const le = learningCue.end;
 
         const key = movieId + "_#" + i;
 
@@ -150,11 +628,11 @@ function generateWindow(movieId: string, learningCuesRaw: CueLike[], nativeCuesR
 
         for (let j = 0; j < nativeCues.length; j++) {
             const nativeCue = nativeCues[j];
-            const ns = state === "OneToN" && (nativeCue.start - lastNe) < EPS ? lastNs : nativeCue.start;
+            const ns = nativeCue.start;
+            const ne = nativeCue.end;
 
             if (ns >= le) break;
-
-            const ne = nativeCue.end;
+            if (ne <= ls) continue;
 
             const overlapStart = Math.max(ns, ls);
             const overlapEnd = Math.min(ne, le);
@@ -168,66 +646,9 @@ function generateWindow(movieId: string, learningCuesRaw: CueLike[], nativeCuesR
 
                 if (lRatio <= RATIO_MIN && nRatio <= RATIO_MIN) continue;
 
-                subFluentDebug("Matching native cue:", nativeCue.text, "with learning cue:", learningCue.text, "Lratio:", lRatio, "Nratio:", nRatio);
-                if (lRatio >= RATIO_MAX && nRatio >= RATIO_MAX) {
-                    // L:N = 1:1
+                if (lRatio >= RATIO_MIN || nRatio >= RATIO_MIN) {
                     subtitleCueMap.get(key)?.native.push(nativeCue.text);
-                    state = "OneToOne";
-                } else if (RATIO_MAX <= lRatio && nRatio < RATIO_MAX) {
-                    // L:N = N:1
-                    // le값만 변경
-                    subtitleCueMap.get(key)?.native.push(nativeCue.text);
-
-                    if (i + 1 < learningCues.length) {
-                        const nextLearning = learningCues[i + 1];
-                        if (nextLearning.start <= ne + EPS) {
-                            le = nextLearning.end;
-                            subtitleCueMap.get(key)?.learn.push(nextLearning.text);
-                            subtitleCueMap.get(key)!.end = le;
-                            i++; // 다음 learning cue 소비
-                        }
-                    }
-
-                    state = "NToOne";
-                } else if (RATIO_MAX <= nRatio && lRatio < RATIO_MAX) {
-                    // L:N = 1:N
-                    // ns값 기존 값 유지
-                    subtitleCueMap.get(key)?.native.push(nativeCue.text);
-                    lastNs = ns;
-                    lastNe = ne;
-
-                    state = "OneToN";
-                } else {
-                    // L:N = N:M
-                    // - native도 여러 개가 붙을 수 있고
-                    // - learning도 다음 cue들까지 이어서 하나의 클러스터로 묶일 수 있는 케이스
-                    subtitleCueMap.get(key)?.native.push(nativeCue.text);
-
-                    // OneToN처럼 ns를 고정(또는 유지)해서 다음 native와의 overlap 계산이 튀지 않게 함
-                    lastNs = ns;
-
-                    // 현재 native cue가 learning cue 구간을 넘어가면, learning 쪽도 다음 cue들을 소비하며 le를 확장
-                    // (추가 "검색" 루프가 아니라, i 포인터를 앞으로 이동시키며 연속 cue만 흡수)
-                    while (i + 1 < learningCues.length) {
-                        const nextLearning = learningCues[i + 1];
-                        // 다음 learning이 현재 learning 끝 직후로 이어지거나, 현재 native가 아직 다음 learning 시작까지 덮고 있으면 흡수
-                        const shouldAbsorb = nextLearning.start <= le + EPS || nextLearning.start < ne - EPS;
-                        if (!shouldAbsorb) break;
-
-                        le = nextLearning.end;
-                        subtitleCueMap.get(key)?.learn.push(nextLearning.text);
-                        i++;
-
-                        // 이미 le가 native의 끝을 충분히 덮으면(=현재 native가 한 덩어리로 설명 가능) 더 확장하지 않음
-                        if (le >= ne - EPS) break;
-                    }
-
-                    state = "NToM";
                 }
-
-                // consume matched native cue
-                nativeCues.splice(j, 1);
-                j--;
             } else {
                 // C) "거의 맞닿은" 케이스(경계만 살짝 어긋남) 허용
                 // 예: n.end 가 Ls 근처거나 n.start 가 Le 근처인 경우
@@ -253,7 +674,6 @@ contentState.subscribeMovieId((next) => {
     // movieId가 바뀌면 이전 루프는 중단
     if (!next) {
         stopCueLogging?.();
-        subFluentDebug("stopCueLogging::movieId X");
         stopCueLogging = null;
     }
 });
@@ -261,7 +681,6 @@ contentState.subscribeMovieId((next) => {
 
 window.addEventListener("beforeunload", () => {
     stopCueLogging?.();
-    subFluentDebug("stopCueLogging::beforeuload");
     stopCueLogging = null;
 });
 
@@ -349,161 +768,22 @@ window.addEventListener("message", async (ev) => {
     const d = ev.data;
     if (d?.source !== PAGE_HOOK_SOURCE) return;
 
-    if (d?.type === "HOOK_READY") {
-        return;
+    if (d?.type === "PLAYER_READY") {
+        window.postMessage({ source: "SubFluent", type: "ACK", requestId: d.requestId }, "*");
+        contentState.setMovieId(d.movieId);
     }
 
     if (d?.type === "TTML_TEXT") {
-        if (!contentState.movieId)
-            return;
-        let movieId = contentState.movieId;
-        if (contentState.isSubtitlesReady(movieId)) {
-            subFluentDebug("isSubtitlesReady(movieId):", movieId);
-            if (contentState.nextMovieId) {
-                movieId = contentState.nextMovieId;
-                subFluentDebug("isSubtitlesReady(nextmovieId):", movieId);
-            }
-        }
+        subFluentDebug("Received TTML_TEXT message:", d.langType, "loaded", d.movieId);
 
+        let movieId = d.movieId
         const lang = d.langType;
-        const ttmlSubtitle = parseTtmlSubtitle(d.ttml);
+        const ttmlSubtitle = parseTtmlSubtitle(d.ttml)
+        if (contentState.getSubtitlesState(movieId) === "active") {
+
+        }
 
         contentState.setSubtitleForMovie(movieId, lang, ttmlSubtitle);
-        subFluentDebug("TTML_TEXT movieId:", movieId);
-        subFluentDebug("downloadedTimedTextedTrackList", contentState.getSubtitles());
         return;
     }
-
-    if (d?.type === "LICENSED_MANIFEST") {
-        if (!contentState.movieId) {
-            contentState.setMovieId(d.movieId);
-            subFluentDebug("FirsttMovieID", d.movieId);
-        }
-        else {
-            contentState.setNextMovieId(d.movieId);
-            subFluentDebug("d.movieID", d.movieId, "nextMovieID", contentState.nextMovieId);
-        }
-
-        subFluentDebug("manifest", d.movieId);
-        return;
-    }
-});
-
-let overlay: HTMLDivElement | null = null;
-let input: HTMLInputElement | null = null;
-
-function getExpectedText(): string {
-    const node = document.querySelector<HTMLElement>("#answer");
-    return node?.dataset?.answer?.trim() || "";
-}
-
-function showOverlay() {
-    if (overlay) return;
-
-    overlay = document.createElement("div");
-    overlay.style.position = "fixed";
-    overlay.style.inset = "0";
-    overlay.style.zIndex = "999999";
-    overlay.style.background = "rgba(0,0,0,0.6)";
-    overlay.style.display = "flex";
-    overlay.style.alignItems = "center";
-    overlay.style.justifyContent = "center";
-
-    const box = document.createElement("div");
-    box.style.background = "white";
-    box.style.padding = "16px";
-    box.style.borderRadius = "12px";
-    box.style.width = "min(520px, 90vw)";
-
-    const title = document.createElement("div");
-    title.textContent = "SubFluent Dictation — type & press Enter";
-    title.style.marginBottom = "10px";
-
-    const result = document.createElement("div");
-    result.id = "dictation-result";
-    result.style.marginBottom = "10px";
-    const state = document.createElement("span");
-    const answer = document.createElement("span");
-    const expectedText = document.createElement("span");
-
-    input = document.createElement("input");
-    input.type = "text";
-    input.placeholder = "Type here...";
-    input.style.width = "100%";
-    input.style.fontSize = "16px";
-    input.style.padding = "10px";
-    input.style.boxSizing = "border-box";
-
-    input.addEventListener("keydown", (e) => {
-        if (!input) return;
-
-        if (e.key === "Enter") {
-
-            const expected = getExpectedText();
-            const actual = input.value;
-
-            const payload: SendDictation = {
-                expected,
-                actual,
-            };
-            const msg: ExtMessage<typeof Msg.DICTATION_SEND> = { type: Msg.DICTATION_SEND, payload };
-            chrome.runtime.sendMessage(msg, (response) => {
-                subFluentDebug("received response from background:", response);
-                if (response?.type === Msg.DICTATION_RESULT) {
-                    const result = response.payload as DictationResult;
-                    if (result.correct) {
-                        state.innerHTML = "✅ Correct!";
-                        answer.innerHTML = result.sendDictation.actual;
-                        expectedText.innerHTML = '<span style="color: green;">' + result.sendDictation.expected + "</span>";
-                    } else {
-                        state.innerHTML = "❌ Wrong!";
-                        answer.innerHTML = result.sendDictation.actual;
-                        expectedText.innerHTML = result.sendDictation.expected;
-                        const wrongIndices = new Set(result.wrong);
-                        const answerWords = result.sendDictation.actual.trim().split(/\s+/);
-                        const highlightedAnswer = answerWords.map((word, index) => {
-                            if (wrongIndices.has(index)) {
-                                return `<span style="color: red;">${word}</span>`;
-                            }
-                            return word;
-                        }).join(" ");
-                        answer.innerHTML = highlightedAnswer;
-                    }
-                }
-            });
-
-            input.value = "";
-        }
-
-        if (e.key === "Escape") {
-            hideOverlay();
-        }
-    });
-
-    box.appendChild(title);
-    box.appendChild(input);
-
-    result.appendChild(state);
-    result.appendChild(document.createElement("br"));
-    result.appendChild(expectedText);
-    result.appendChild(document.createElement("br"));
-    result.appendChild(answer);
-
-    box.appendChild(result);
-
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-
-    input.focus();
-}
-
-function hideOverlay() {
-    overlay?.remove();
-    overlay = null;
-    input = null;
-}
-
-chrome.runtime.onMessage.addListener((msg: any) => {
-    if (msg?.type === Msg.START) showOverlay();
-    if (msg?.type === Msg.STOP) hideOverlay();
 });

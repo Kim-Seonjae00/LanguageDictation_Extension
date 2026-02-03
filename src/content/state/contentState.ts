@@ -6,6 +6,8 @@ import { type TtmlSubtitle } from "../../shared/ttmlParser";
 
 export type LangType = "native" | "learning";
 
+export type SubtitlesState = "waiting0" | "waiting1" | "ready" | "active";
+
 type Unsubscribe = () => void;
 
 type MovieIdListener = (next: string | null, prev: string | null) => void;
@@ -15,11 +17,11 @@ type SubtitlesChangedPayload = {
   lang: LangType;
   subtitle: TtmlSubtitle;
 };
-
 type SubtitlesChangedListener = (payload: SubtitlesChangedPayload) => void;
 
 type SubtitlesReadyPayload = {
   movieId: string;
+  state: SubtitlesState;
   bucket: Required<Record<LangType, TtmlSubtitle>>;
 };
 
@@ -114,9 +116,10 @@ export class ContentState {
     if (native && learning && !this._readyMovies.has(movieId)) {
       this._readyMovies.add(movieId);
       const readyBucket = { native, learning } as Required<Record<LangType, TtmlSubtitle>>;
+      const state = this.getSubtitlesState(movieId);
       for (const fn of this._subtitlesReadyListeners) {
         try {
-          fn({ movieId, bucket: readyBucket });
+          fn({ movieId, state, bucket: readyBucket });
         } catch {
           // ignore subscriber errors
         }
@@ -158,6 +161,25 @@ export class ContentState {
 
   getBucket(movieId: string): Partial<Record<LangType, TtmlSubtitle>> | undefined {
     return this._downloadedTimedTextedTrackList.get(movieId);
+  }
+
+  /**
+   * 자막 상태 계산
+   * - waiting0: native/learning 둘 다 없음
+   * - waiting1: 둘 중 하나만 있음
+   * - ready: 둘 다 있으나 현재 movieId가 아님
+   * - active: 둘 다 있고 현재 movieId임
+   */
+  getSubtitlesState(movieId: string): SubtitlesState {
+    const b = this._downloadedTimedTextedTrackList.get(movieId);
+    const hasNative = !!b?.native;
+    const hasLearning = !!b?.learning;
+
+    if (!hasNative && !hasLearning) return "waiting0";
+    if (hasNative !== hasLearning) return "waiting1";
+
+    // both
+    return this._movieId === movieId ? "active" : "ready";
   }
 
   /**
