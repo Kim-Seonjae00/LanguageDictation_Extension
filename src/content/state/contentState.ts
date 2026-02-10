@@ -46,6 +46,16 @@ export class ContentState {
   private _subtitlesReadyListeners = new Set<SubtitlesReadyListener>();
   private _readyMovies = new Set<string>();
 
+  private _player: any = null;
+
+  get player(): any {
+    return this._player;
+  }
+
+  set player(next: any) {
+    this._player = next;
+  }
+
   // -------------------- movieId --------------------
   get movieId(): string | null {
     return this._movieId;
