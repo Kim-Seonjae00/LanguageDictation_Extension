@@ -1,5 +1,7 @@
 // src/content/pageHook.ts
 import { setSubFluentLogLevel, subFluentDebug, subFluentError } from "../shared/util";
+import type{ PlayerFacade } from "../shared/player";
+
 setSubFluentLogLevel("DEBUG"); // 개발 중
 // setSubFluentLogLevel("INFO"); // 평소
 // setSubFluentLogLevel("WARN"); // 배포
@@ -27,79 +29,6 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
 
     let playerFacade: any = null; // raw Netflix player (live object)
 
-    type PlayerFacade = {
-        // --- core / ids ---
-        getMovieId: () => any;
-        getXid?: () => any;
-        getPlaybackContextId?: () => any;
-
-        // --- readiness / state ---
-        getReady: () => boolean;
-        isReady?: () => boolean;
-        getBusy?: () => any;
-
-        // --- playback basic ---
-        getCurrentTime?: () => number;
-        getBufferedTime?: () => number;
-        getDuration?: () => number;
-        getPaused?: () => boolean;
-        getPlaying?: () => boolean;
-        isPaused?: () => boolean;
-        isPlaying?: () => boolean;
-        getEnded?: () => boolean;
-        isEnded?: () => boolean;
-        getMuted?: () => boolean;
-        isMuted?: () => boolean;
-        getVolume?: () => number;
-        getPlaybackRate?: () => number;
-
-        // --- playback navigation / segments / tricks ---
-        getSegmentTime?: () => any;
-        getTimeCodes?: () => any;
-        goToNextSegment?: (h: any, k: any) => any;
-        getTrickPlayFrame?: (h: any) => any;
-
-        // --- element / sizing ---
-        getElement?: () => any;
-        getVideoSize?: () => any;
-        getCropAspectRatio?: () => any;
-
-        // --- diagnostics / logs / errors ---
-        getError?: () => any;
-        induceError?: (h: any) => any;
-        getDiagnostics?: () => any;
-        getAdditionalLogInfo?: () => any;
-
-        // --- audio ---
-        getAudioTrack?: () => any;
-        getAudioTrackList?: () => any;
-        getMaxRecommendedAudioIndex?: () => any;
-
-        // --- text / timed text ---
-        getTextTrack?: () => any;
-        getTextTrackList?: (h: any) => any;
-
-        getTimedTextTrack: () => any;
-        getTimedTextTrackList: (h?: any) => any;
-        setTimedTextTrack: (track: any) => Promise<any>;
-
-        getTimedTextSettings?: () => any;
-        getTimedTextVisibility?: () => any;
-
-        getMaxRecommendedTextIndex?: (h: any) => any;
-        getMaxRecommendedTimedTextIndex?: (h: any) => any;
-
-        // --- managers ---
-        getAdManager?: () => any;
-        getLivePlaybackManager?: () => any;
-        getPlaygraphManager?: () => any;
-
-        // --- network / congestion ---
-        getCongestionInfo?: (h: any) => any;
-
-        // --- internal (you logged iVa / iVa property) ---
-        iVa?: any;
-    };
 
     function createPlayerFacade(p: any): PlayerFacade {
         return {
@@ -115,6 +44,7 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
 
             // --- playback basic ---
             getCurrentTime: () => p?.getCurrentTime?.(),
+            seek: (time: any) => p?.seek?.(time),
             getBufferedTime: () => p?.getBufferedTime?.(),
             getDuration: () => p?.getDuration?.(),
             getPaused: () => p?.getPaused?.(),
@@ -125,7 +55,6 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
             isEnded: () => p?.isEnded?.(),
             getMuted: () => p?.getMuted?.(),
             isMuted: () => p?.isMuted?.(),
-            getVolume: () => p?.getVolume?.(),
             getPlaybackRate: () => p?.getPlaybackRate?.(),
 
             // --- playback navigation / segments / tricks ---
@@ -147,8 +76,8 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
 
             // --- audio ---
             getAudioTrack: () => p?.getAudioTrack?.(),
-            getAudioTrackList: () => p?.getAudioTrackList?.(),
-            getMaxRecommendedAudioIndex: () => p?.getMaxRecommendedAudioIndex?.(),
+            getAudioTrackList: (h: any) => p?.getAudioTrackList?.(h),
+            setAudioTrack: (track: any) => p?.setAudioTrack?.(track),
 
             // --- text / timed text ---
             getTextTrack: () => p?.getTextTrack?.(),
@@ -181,6 +110,14 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
         window.postMessage({ source: SRC, ...data }, "*");
     };
 
+    window.addEventListener("message", (event) => {
+        const d = event.data;
+        if (!d || d.source !== SRC) return;
+        if (d.type !== "PLAYER_SEEK") return;
+
+        playerFacade?.seek(d.start?d.start:playerFacade.getCurrentTime() - 250);
+    });
+
     const isNoneTimedTextTrack = (t: any): boolean => {
         if (!t) return false;
 
@@ -206,7 +143,6 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
 
         const noneTrack = trackList.find(isNoneTimedTextTrack) || null;
         if (!noneTrack) {
-            subFluentDebug("[initializeTextTrack] NONE track not found");
             return;
         }
 
@@ -248,7 +184,6 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
         ns.hooks ??= {};
         
         if (ns.hooks.initPlayerChainInFlight) {
-            subFluentDebug("initPlayerChain already in-flight. skip.");
             return null;
         }
         
@@ -276,18 +211,21 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
             const trackList = await pollUntil<any[]>(() => {
                 return player?.getTimedTextTrackList?.();
             }, "trackList");
+
+            const audioList = await pollUntil<any[]>(() => {
+                return player?.getAudioTrackList?.();
+            }, "audioList");
             
             playerFacade = createPlayerFacade(player);
 
             // Initialize to NONE(Off/끄기) once playerFacade is ready
             initializeTextTrack(trackList);
-            post({ type: "PLAYER_READY", movieId: playerFacade.getMovieId?.() });
+            post({ type: "PLAYER_READY", trackList: trackList, audioList: audioList || [] });
             callback();
             
             // ---- start monitoring (singleton) ----
             if (!ns.hooks.monitoringTimer) {
                 ns.hooks.lastReinitAt ??= 0;
-
                 ns.hooks.monitoringTimer = setInterval(() => {
                     try {
                         if (!playerFacade) return;
@@ -300,7 +238,6 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
                             if (now - ns.hooks.lastReinitAt < 1500) return;
                             ns.hooks.lastReinitAt = now;
 
-                            subFluentDebug("[monitor] player not ready -> reinit");
                             initPlayerChain(callback);
                         }
                     } catch (e) {
@@ -333,14 +270,9 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
     }
 
     function requestTTMLForTrack(trackList: any[], allTrackList: any[]) {
-        if (!playerFacade?.setTimedTextTrack) {
-            subFluentDebug("[requestTTMLForTrack] playerFacade not ready. skip.");
-            return;
-        }
-        if (!trackList?.length) {
-            subFluentDebug("no matching timed text tracks found");
-            return;
-        }
+        if (!playerFacade?.setTimedTextTrack) return;
+        if (!trackList?.length) return;
+
         for (const track of trackList) {
             try {
                 playerFacade.setTimedTextTrack(track);
@@ -442,15 +374,12 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
                                     const isBcp47Match = TEST_LANG.includes(bcp47 ?? "");
                                     const movieId = playerFacade?.getMovieId?.()?playerFacade.getMovieId?.():extractNumericId(location.pathname);
 
-                                    if (maybeText && looksLikeTtml(maybeText) && isBcp47Match && isWatch()) {
+                                    if (maybeText && looksLikeTtml(maybeText) && isWatch() &&  isBcp47Match) {
                                         const langType = bcp47 == learningLang ? "learning" : "native";
+
                                         post({ type: "TTML_TEXT", langType: langType, ttml: maybeText, movieId: movieId });
                                         return;
                                     }
-                                    // Remove risky re-initialization from every TTML response (it can run before playerFacade exists).
-                                    // if(playerFacade != null && playerFacade.getTimedTextTrackList != null){
-                                    //     initializeTextTrack(playerFacade.getTimedTextTrackList?.());
-                                    // }
                                 }
                             }
                         } catch (e) {
