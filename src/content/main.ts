@@ -1,7 +1,7 @@
 import { Msg, type DictationResult, type SendDictation, type ExtMessage, type TimedTextTrack, type AudioTrack } from "../shared/protocol";
 import { parseTtmlSubtitle } from "../shared/ttmlParser";
-import { setSubFluentLogLevel, subFluentDebug, subFluentInfo } from "../shared/util";
-import { contentState } from "./state/contentState";
+import { setSubFluentLogLevel, subFluentDebug } from "../shared/util";
+import { contentState, makeTrackKey, type TimedTextTrackMeta, type StoredTimedText } from "./state/contentState";
 
 setSubFluentLogLevel("DEBUG");
 
@@ -513,35 +513,103 @@ function ensureDictationOverlay() {
 let sfSettingsOverlay: HTMLDivElement | null = null;
 let sfSettingsOpen = false;
 
+
 let sfAvailableSubtitleLangs: TimedTextTrack[] = [];
 let sfAvailableAudioLangs: AudioTrack[] = []
 
 let sfSettingDictationEnabled = false; // settings modal toggle (synced from sfDictationMode on open)
 let sfSyncSettingsDictationToggleVisual: ((checked: boolean) => void) | null = null;
 
-let sfSettingAudioLang = "en";
-let sfSettingSubtitleLang = "en";
-let sfSettingTranslateLang = "ko";
+// NOTE: Initialized from PLAYER_READY track lists (no hardcoded defaults)
+let sfSettingAudioLang = "";        // trackId
+let sfSettingSubtitleLang = "";     // trackId
+let sfSettingTranslateLang = "";    // trackId
+
+// Settings modal element refs (so we can refresh options/selection on each open)
+let sfSettingsAudioSel: HTMLSelectElement | null = null;
+let sfSettingsSubtitleSel: HTMLSelectElement | null = null;
+let sfSettingsTranslateSel: HTMLSelectElement | null = null;
+
+function refreshSettingsSelects() {
+    if (!sfSettingsOverlay) return;
+
+    // If defaults are still empty, derive from current title lists.
+    ensureTrackIdDefaultsInitialized();
+
+    // Ensure local lists are the latest single source of truth.
+    sfAvailableSubtitleLangs = contentState.timedTextTrackList || [];
+    sfAvailableAudioLangs = contentState.audioList || [];
+
+    const fill = (sel: HTMLSelectElement | null, opts: any[], cur: string) => {
+        if (!sel) return;
+        sel.innerHTML = "";
+        for (const o of opts) {
+            const opt = document.createElement("option");
+            opt.value = o.trackId;
+            opt.textContent = o.displayName;
+            sel.appendChild(opt);
+        }
+
+        // Selection: prefer `cur` if it exists; otherwise fall back to first option.
+        const hasCur = !!opts.find((x: any) => x?.trackId === cur);
+        const nextValue = hasCur ? cur : (opts[0]?.trackId as string) || "";
+        sel.value = nextValue;
+    };
+
+    fill(sfSettingsAudioSel, sfAvailableAudioLangs, sfSettingAudioLang);
+    fill(sfSettingsSubtitleSel, sfAvailableSubtitleLangs, sfSettingSubtitleLang);
+    fill(sfSettingsTranslateSel, sfAvailableSubtitleLangs, sfSettingTranslateLang);
+
+    // Keep state vars aligned with actual selected values
+    if (sfSettingsAudioSel) sfSettingAudioLang = sfSettingsAudioSel.value;
+    if (sfSettingsSubtitleSel) sfSettingSubtitleLang = sfSettingsSubtitleSel.value;
+    if (sfSettingsTranslateSel) sfSettingTranslateLang = sfSettingsTranslateSel.value;
+}
 
 // ===== Persistent Settings (chrome.storage.local) =====
-const SF_SETTINGS_KEY = "sf_settings_v1" as const;
+// NOTE: trackId/trackList can change per title. Persist only criteria that can be re-mapped.
+const SF_SETTINGS_KEY = "sf_settings_v2" as const;
+
+type SfTrackCriteria = {
+  bcp47: string | null;
+  trackType: string | null;
+  rawTrackType: string | null;
+};
 
 type SfGlobalPrefs = {
-  version: 1;
+  version: 2;
   dictationEnabled: boolean;
-  preferredAudioBcp47: string | null;
-  preferredLearningBcp47: string | null;
-  preferredTranslateBcp47: string | null;
+
+  preferredAudio: SfTrackCriteria;
+  preferredLearning: SfTrackCriteria;
+  preferredTranslate: SfTrackCriteria;
+
   updatedAt: number;
 };
 
 const SF_DEFAULT_PREFS: SfGlobalPrefs = {
-  version: 1,
+  version: 2,
   dictationEnabled: false,
-  preferredAudioBcp47: null,
-  preferredLearningBcp47: null,
-  preferredTranslateBcp47: "ko",
+
+  preferredAudio: { bcp47: null, trackType: null, rawTrackType: null },
+  // If user has no prefs, default to English for both subtitle/translate (best-effort)
+  preferredLearning: { bcp47: "en", trackType: null, rawTrackType: null },
+  preferredTranslate: { bcp47: "en", trackType: null, rawTrackType: null },
+
   updatedAt: Date.now(),
+};
+
+// Legacy v1 shape (for migration only)
+type SfGlobalPrefsV1 = {
+  version: 1;
+  dictationEnabled: boolean;
+  preferredAudioTrack: AudioTrack | null;
+  preferredLearningTrack: TimedTextTrack | null;
+  preferredTranslateTrack: TimedTextTrack | null;
+  preferredAudioBcp47: string | null;
+  preferredLearningBcp47: string | null;
+  preferredTranslateBcp47: string | null;
+  updatedAt: number;
 };
 
 function sfStorageGet<T>(key: string): Promise<T | undefined> {
@@ -564,45 +632,181 @@ function sfStorageSet<T>(key: string, value: T): Promise<void> {
   });
 }
 
+const norm = (s: any) => String(s ?? "").toLowerCase();
+const primary = (s: string) => norm(s).split("-")[0];
+
+function toCriteriaFromTrack(track: any | null | undefined): SfTrackCriteria {
+  if (!track) return { bcp47: null, trackType: null, rawTrackType: null };
+  return {
+    bcp47: track?.bcp47 != null ? norm(track.bcp47) : null,
+    trackType: track?.trackType != null ? String(track.trackType) : null,
+    rawTrackType: (track as any)?.rawTrackType != null ? String((track as any).rawTrackType) : null,
+  };
+}
+
+function migrateV1ToV2(v1: SfGlobalPrefsV1): SfGlobalPrefs {
+  // Prefer explicit tracks if present; otherwise use legacy bcp47 fields.
+  const audioC = v1.preferredAudioTrack ? toCriteriaFromTrack(v1.preferredAudioTrack) : { ...toCriteriaFromTrack(null), bcp47: v1.preferredAudioBcp47 ? norm(v1.preferredAudioBcp47) : null };
+  const learnC = v1.preferredLearningTrack ? toCriteriaFromTrack(v1.preferredLearningTrack) : { ...toCriteriaFromTrack(null), bcp47: v1.preferredLearningBcp47 ? norm(v1.preferredLearningBcp47) : "en" };
+  const tranC = v1.preferredTranslateTrack ? toCriteriaFromTrack(v1.preferredTranslateTrack) : { ...toCriteriaFromTrack(null), bcp47: v1.preferredTranslateBcp47 ? norm(v1.preferredTranslateBcp47) : "en" };
+
+  return {
+    version: 2,
+    dictationEnabled: !!v1.dictationEnabled,
+    preferredAudio: { ...audioC },
+    preferredLearning: { ...learnC },
+    preferredTranslate: { ...tranC },
+    updatedAt: Date.now(),
+  };
+}
+
 async function loadSfPrefs(): Promise<SfGlobalPrefs> {
-  const v = await sfStorageGet<SfGlobalPrefs>(SF_SETTINGS_KEY);
-  if (!v || typeof v !== "object") return { ...SF_DEFAULT_PREFS, updatedAt: Date.now() };
-  return { ...SF_DEFAULT_PREFS, ...v, version: 1 };
+  const v2 = await sfStorageGet<SfGlobalPrefs>(SF_SETTINGS_KEY);
+  if (v2 && typeof v2 === "object" && (v2 as any).version === 2) {
+    return { ...SF_DEFAULT_PREFS, ...v2, version: 2 };
+  }
+
+  // Try migrate from v1 key (if it existed)
+  const v1 = await sfStorageGet<SfGlobalPrefsV1>("sf_settings_v1");
+  if (v1 && typeof v1 === "object" && (v1 as any).version === 1) {
+    const migrated = migrateV1ToV2(v1);
+    await sfStorageSet<SfGlobalPrefs>(SF_SETTINGS_KEY, migrated);
+    return migrated;
+  }
+
+  return { ...SF_DEFAULT_PREFS, updatedAt: Date.now() };
 }
 
 async function saveSfPrefs(patch: Partial<SfGlobalPrefs>): Promise<SfGlobalPrefs> {
   const prev = await loadSfPrefs();
-  const next: SfGlobalPrefs = { ...prev, ...patch, version: 1, updatedAt: Date.now() };
-  subFluentDebug("Saving SF prefs:", next);
+  const next: SfGlobalPrefs = { ...prev, ...patch, version: 2, updatedAt: Date.now() };
   await sfStorageSet<SfGlobalPrefs>(SF_SETTINGS_KEY, next);
   return next;
 }
 
-// ===== bcp47 <-> trackId 매핑 =====
-function getAudioBcp47ByTrackId(trackId: string): string | null {
-  const t = sfAvailableAudioLangs.find((x: any) => x?.trackId === trackId);
-  return (t?.bcp47 as string) || null;
+// ===== bcp47 <-> trackId (re-map by criteria) =====
+function getAudioTrackByTrackId(trackId: string): AudioTrack | null {
+  if (!trackId) return null;
+  return (sfAvailableAudioLangs || []).find((x: any) => String(x?.trackId || "") === trackId) || null;
 }
 
-function getTimedBcp47ByTrackId(trackId: string): string | null {
-  const t = sfAvailableSubtitleLangs.find((x: any) => x?.trackId === trackId);
-  if ((t as any)?.isNoneTrack) return null; // '끄기'
-  return (t?.bcp47 as string) || null;
+function getTimedTextTrackByTrackId(trackId: string): TimedTextTrack | null {
+  if (!trackId) return null;
+  return (sfAvailableSubtitleLangs || []).find((x: any) => String(x?.trackId || "") === trackId) || null;
 }
 
-function pickAudioTrackIdByBcp47(bcp47: string | null): string {
-  if (!bcp47) return sfSettingAudioLang;
-  const t = sfAvailableAudioLangs.find((x: any) => x?.bcp47 === bcp47);
-  return (t?.trackId as string) || sfSettingAudioLang;
+function pickAudioTrackIdByCriteria(pref: SfTrackCriteria | null | undefined): string {
+  const list = sfAvailableAudioLangs || [];
+  if (!list.length) return sfSettingAudioLang;
+  const wantedB = pref?.bcp47 ? norm(pref.bcp47) : "";
+  const wantedPrimary = wantedB ? primary(wantedB) : "";
+
+  const matchesType = (x: any) => {
+    if (pref?.trackType && String(x?.trackType || "") !== String(pref.trackType)) return false;
+    if (pref?.rawTrackType && String(x?.rawTrackType || "") !== String(pref.rawTrackType)) return false;
+    return true;
+  };
+
+  // 1) exact + type
+  let t = wantedB ? list.find((x: any) => norm(x?.bcp47) === wantedB && matchesType(x)) : null;
+  if (t?.trackId) return String(t.trackId);
+
+  // 2) exact
+  t = wantedB ? list.find((x: any) => norm(x?.bcp47) === wantedB) : null;
+  if (t?.trackId) return String(t.trackId);
+
+  // 3) primary + type
+  t = wantedPrimary
+    ? list.find((x: any) => {
+        const b = norm(x?.bcp47);
+        return b && primary(b) === wantedPrimary && matchesType(x);
+      })
+    : null;
+  if (t?.trackId) return String(t.trackId);
+
+  // 4) primary
+  t = wantedPrimary
+    ? list.find((x: any) => {
+        const b = norm(x?.bcp47);
+        return b && primary(b) === wantedPrimary;
+      })
+    : null;
+  if (t?.trackId) return String(t.trackId);
+
+  return sfSettingAudioLang || String(list[0]?.trackId || "");
 }
 
-function pickTimedTrackIdByBcp47(bcp47: string | null): string {
-  if (!bcp47) {
-    const off = sfAvailableSubtitleLangs.find((x: any) => (x as any)?.isNoneTrack);
-    return (off?.trackId as string) || sfSettingSubtitleLang;
-  }
-  const t = sfAvailableSubtitleLangs.find((x: any) => x?.bcp47 === bcp47);
-  return (t?.trackId as string) || sfSettingSubtitleLang;
+function pickTimedTrackIdByCriteria(pref: SfTrackCriteria | null | undefined): string {
+  const list = (sfAvailableSubtitleLangs || []).filter((x: any) => !(x as any)?.isNoneTrack);
+  if (!list.length) return sfSettingSubtitleLang;
+
+  const wantedB = pref?.bcp47 ? norm(pref.bcp47) : "";
+  const wantedPrimary = wantedB ? primary(wantedB) : "";
+
+  const matchesType = (x: any) => {
+    if (pref?.trackType && String(x?.trackType || "") !== String(pref.trackType)) return false;
+    if (pref?.rawTrackType && String(x?.rawTrackType || "") !== String(pref.rawTrackType)) return false;
+    return true;
+  };
+
+  // 1) exact + type
+  let t = wantedB ? list.find((x: any) => norm(x?.bcp47) === wantedB && matchesType(x)) : null;
+  if (t?.trackId) return String(t.trackId);
+
+  // 2) exact
+  t = wantedB ? list.find((x: any) => norm(x?.bcp47) === wantedB) : null;
+  if (t?.trackId) return String(t.trackId);
+
+  // 3) primary + type
+  t = wantedPrimary
+    ? list.find((x: any) => {
+        const b = norm(x?.bcp47);
+        return b && primary(b) === wantedPrimary && matchesType(x);
+      })
+    : null;
+  if (t?.trackId) return String(t.trackId);
+
+  // 4) primary
+  t = wantedPrimary
+    ? list.find((x: any) => {
+        const b = norm(x?.bcp47);
+        return b && primary(b) === wantedPrimary;
+      })
+    : null;
+  if (t?.trackId) return String(t.trackId);
+
+  return sfSettingSubtitleLang || String(list[0]?.trackId || "");
+}
+
+function pickDefaultAudioTrackId(): string {
+  // Prefer PRIMARY + native audio, then any PRIMARY, then first item.
+  const list = contentState.audioList || [];
+  const a1 = list.find((x: any) => x?.rawTrackType === "PRIMARY" && x?.isNative);
+  if (a1?.trackId) return a1.trackId;
+  const a2 = list.find((x: any) => x?.rawTrackType === "PRIMARY");
+  if (a2?.trackId) return a2.trackId;
+  const a3 = list[0];
+  return (a3?.trackId as string) || "";
+}
+
+function pickDefaultSubtitleTrackId(): string {
+  // Prefer first non-NONE subtitle track. If none, fallback to NONE if present.
+  const list = contentState.timedTextTrackList || [];
+  const s1 = list.find((x: any) => !(x as any)?.isNoneTrack);
+  if (s1?.trackId) return s1.trackId;
+  const off = list.find((x: any) => (x as any)?.isNoneTrack);
+  return (off?.trackId as string) || "";
+}
+
+function pickDefaultTranslateTrackId(): string {
+  // Default translate follows subtitle default.
+  return pickDefaultSubtitleTrackId();
+}
+
+function ensureTrackIdDefaultsInitialized() {
+  if (!sfSettingAudioLang) sfSettingAudioLang = pickDefaultAudioTrackId();
+  if (!sfSettingSubtitleLang) sfSettingSubtitleLang = pickDefaultSubtitleTrackId();
+  if (!sfSettingTranslateLang) sfSettingTranslateLang = pickDefaultTranslateTrackId();
 }
 // ===== Persistent Settings end =====
 
@@ -671,7 +875,7 @@ function ensureSettingsOverlay() {
 
     const desc = document.createElement("div");
     desc.textContent =
-        "언어 목록은 아직 더미 데이터입니다. (나중에 Netflix에서 실제 언어 리스트를 받아와서 연결)";
+        "현재 타이틀의 오디오/자막 트랙을 기반으로 설정합니다. (타이틀이 바뀌면 목록도 바뀜)";
     desc.style.fontSize = "13px";
     desc.style.opacity = "0.78";
     desc.style.marginBottom = "10px";
@@ -686,9 +890,11 @@ function ensureSettingsOverlay() {
             const opt = document.createElement("option");
             opt.value = o.trackId;
             opt.textContent = o.displayName;
-            if (o.trackId === cur) opt.selected = true;
             sel.appendChild(opt);
         }
+        // Selection: prefer `cur` if exists; else fall back to first.
+        const hasCur = !!opts.find((x: any) => x?.trackId === cur);
+        sel.value = hasCur ? cur : ((opts[0]?.trackId as string) || "");
     };
 
     const makeRow = (label: string, help: string, bodyEl: HTMLElement) => {
@@ -796,31 +1002,30 @@ function ensureSettingsOverlay() {
         e.stopPropagation();
         sfSettingDictationEnabled = !sfSettingDictationEnabled;
         syncDictToggleVisual(sfSettingDictationEnabled);
-        subFluentDebug("[SubFluent] setting dictation enabled:", sfSettingDictationEnabled);
     });
 
     dictToggleWrap.appendChild(dictToggleLeft);
     dictToggleWrap.appendChild(dictToggleRight);
 
     const audioSel = document.createElement("select");
+    sfSettingsAudioSel = audioSel;
     fillOptions(audioSel, sfAvailableAudioLangs, sfSettingAudioLang);
     audioSel.addEventListener("change", () => {
         sfSettingAudioLang = audioSel.value;
-        subFluentDebug("[SubFluent] setting audio lang:", sfSettingAudioLang);
     });
 
     const subSel = document.createElement("select");
+    sfSettingsSubtitleSel = subSel;
     fillOptions(subSel, sfAvailableSubtitleLangs, sfSettingSubtitleLang);
     subSel.addEventListener("change", () => {
         sfSettingSubtitleLang = subSel.value;
-        subFluentDebug("[SubFluent] setting subtitle lang:", sfSettingSubtitleLang);
     });
 
     const trSel = document.createElement("select");
+    sfSettingsTranslateSel = trSel;
     fillOptions(trSel, sfAvailableSubtitleLangs, sfSettingTranslateLang);
     trSel.addEventListener("change", () => {
         sfSettingTranslateLang = trSel.value;
-        subFluentDebug("[SubFluent] setting translate lang:", sfSettingTranslateLang);
     });
 
     sectionWrap.appendChild(makeRow("받아쓰기 설정", "토글", dictToggleWrap));
@@ -846,27 +1051,89 @@ function ensureSettingsOverlay() {
     applyBtn.addEventListener("click", async (e) => {
         // Apply dictation ON/OFF (즉시 반영)
         toggleDictationMode(sfSettingDictationEnabled);
+        
+        // Apply audio immediately if changed
+        const prevPref = await loadSfPrefs();
+        const prevAudio:SfTrackCriteria = prevPref.preferredAudio;
 
-        // trackId -> bcp47로 변환해서 저장(타이틀 바뀌어도 유지되게)
-        const audioBcp47 = getAudioBcp47ByTrackId(sfSettingAudioLang);
-        const learningBcp47 = getTimedBcp47ByTrackId(sfSettingSubtitleLang);
-        const translateBcp47 = getTimedBcp47ByTrackId(sfSettingTranslateLang);
+        // Store only criteria (cross-title stable)
+        const audioTrackObj = getAudioTrackByTrackId(sfSettingAudioLang);
+        const learningTrackObj = getTimedTextTrackByTrackId(sfSettingSubtitleLang);
+        const translateTrackObj = getTimedTextTrackByTrackId(sfSettingTranslateLang);
+
+        const nextAudio: SfTrackCriteria = {
+            bcp47: audioTrackObj?.bcp47 ? String(audioTrackObj.bcp47).toLowerCase() : null,
+            trackType: audioTrackObj?.trackType ? String(audioTrackObj.trackType) : null,
+            rawTrackType: (audioTrackObj as any)?.rawTrackType ? String((audioTrackObj as any).rawTrackType) : null,
+        };
+
+        const nextLearning: SfTrackCriteria = {
+            bcp47: learningTrackObj?.bcp47 ? String(learningTrackObj.bcp47).toLowerCase() : null,
+            trackType: learningTrackObj?.trackType ? String(learningTrackObj.trackType) : null,
+            rawTrackType: (learningTrackObj as any)?.rawTrackType ? String((learningTrackObj as any).rawTrackType) : null,
+        };
+
+        const nextTranslate: SfTrackCriteria = {
+            bcp47: translateTrackObj?.bcp47 ? String(translateTrackObj.bcp47).toLowerCase() : null,
+            trackType: translateTrackObj?.trackType ? String(translateTrackObj.trackType) : null,
+            rawTrackType: (translateTrackObj as any)?.rawTrackType ? String((translateTrackObj as any).rawTrackType) : null,
+        };
+
+        if (nextAudio.bcp47 !== prevAudio.bcp47 || nextAudio.trackType !== prevAudio.trackType || nextAudio.rawTrackType !== prevAudio.rawTrackType) {
+            window.postMessage(
+                { type: "PLAYER_SetAudio", source: "SubFluent", trackId: sfSettingAudioLang, bcp47: nextAudio.bcp47 },
+                "*"
+            );
+        }
+
+        // Always request TTML for the currently selected subtitle/translate languages.
+        // Use meta/key-based request so we can disambiguate same-bcp47 tracks (e.g., en SUB vs en CC).
+        // If selection/meta is missing, default bcp47 to English ("en").
+        const learningMeta: TimedTextTrackMeta = {
+            bcp47: nextLearning.bcp47 || "en",
+            trackType: nextLearning.trackType || null,
+            rawTrackType: nextLearning.rawTrackType || null,
+            nttmTextType: null,
+        };
+
+        const translateMeta: TimedTextTrackMeta = {
+            bcp47: nextTranslate.bcp47 || "en",
+            trackType: nextTranslate.trackType || null,
+            rawTrackType: nextTranslate.rawTrackType || null,
+            nttmTextType: null,
+        };
+
+        subFluentDebug("REQUEST:", learningMeta, translateMeta);
+
+
+        window.postMessage(
+            {
+                type: "SF_REQUEST_TimedText",
+                source: "SubFluent",
+                items: [
+                    { subType: "learning", key: makeTrackKey(learningMeta), meta: learningMeta },
+                    { subType: "translate", key: makeTrackKey(translateMeta), meta: translateMeta },
+                ],
+            },
+            "*"
+        );
 
         await saveSfPrefs({
-        dictationEnabled: sfSettingDictationEnabled,
-        preferredAudioBcp47: audioBcp47,
-        preferredLearningBcp47: learningBcp47,
-        preferredTranslateBcp47: translateBcp47,
+            dictationEnabled: sfSettingDictationEnabled,
+            preferredAudio: nextAudio,
+            preferredLearning: nextLearning,
+            preferredTranslate: nextTranslate,
         });
 
-        subFluentInfo("[SubFluent] apply settings (saved):", {
-        dictationEnabled: sfSettingDictationEnabled,
-        audioTrackId: sfSettingAudioLang,
-        audioBcp47,
-        learningTrackId: sfSettingSubtitleLang,
-        learningBcp47,
-        translateTrackId: sfSettingTranslateLang,
-        translateBcp47,
+        // Update in-memory currentAudio snapshot (best-effort)
+        const list = contentState.audioList;
+        const track = list.find((t) => String((t as any)?.trackId || "") === String(sfSettingAudioLang || "")) || null;
+
+        contentState.setPlayerReady({
+            movieId: contentState.movieId ?? null,
+            audioList: contentState.audioList,
+            trackList: contentState.timedTextTrackList,
+            currentAudio: (track ?? null) as AudioTrack | null,
         });
 
         hideSettingsOverlay();
@@ -919,9 +1186,34 @@ async function showSettingsOverlay() {
   sfSyncSettingsDictationToggleVisual?.(sfSettingDictationEnabled);
 
   // bcp47 -> 이번 타이틀의 trackId로 best-effort 매핑
-  sfSettingAudioLang = pickAudioTrackIdByBcp47(prefs.preferredAudioBcp47);
-  sfSettingSubtitleLang = pickTimedTrackIdByBcp47(prefs.preferredLearningBcp47);
-  sfSettingTranslateLang = pickTimedTrackIdByBcp47(prefs.preferredTranslateBcp47);
+  // If prefs are missing/unmatched, keep derived defaults.
+  // Keep defaults derived from current title lists.
+  ensureTrackIdDefaultsInitialized();
+
+  // 1) Audio: always prefer CURRENT Netflix audio (what user is actually hearing now)
+  const curAudioTrackId = contentState.currentAudio?.trackId as string | undefined;
+  if (curAudioTrackId) {
+    sfSettingAudioLang = curAudioTrackId;
+  }
+
+  // 2) Sub/Translate: prefer current extension selection (learning/native).
+  // If current selection is empty or not in this title’s list, fall back to prefs mapping.
+  const subFromPrefs = pickTimedTrackIdByCriteria(prefs.preferredLearning);
+  const trFromPrefs = pickTimedTrackIdByCriteria(prefs.preferredTranslate);
+
+  const subtitleList = contentState.timedTextTrackList || [];
+  const hasSub = !!subtitleList.find((x: any) => x?.trackId === sfSettingSubtitleLang);
+  const hasTr = !!subtitleList.find((x: any) => x?.trackId === sfSettingTranslateLang);
+
+  if (!sfSettingSubtitleLang || !hasSub) {
+    sfSettingSubtitleLang = subFromPrefs || sfSettingSubtitleLang;
+  }
+  if (!sfSettingTranslateLang || !hasTr) {
+    sfSettingTranslateLang = trFromPrefs || sfSettingTranslateLang;
+  }
+
+  // Refresh selects to reflect latest lists + selected values
+  refreshSettingsSelects();
 
   sfSettingsOpen = true;
   sfSettingsOverlay.style.display = "flex";
@@ -932,6 +1224,7 @@ function hideSettingsOverlay() {
     if (!sfSettingsOverlay) return;
     sfSettingsOpen = false;
     sfSettingsOverlay.style.display = "none";
+    // keep refs (modal is reused), but selection will be refreshed on next open
 }
 // ===== SubFluent Settings UI end =====
 
@@ -1115,11 +1408,6 @@ function startCueLogging(movieId: string, subtitleMap: Map<string, CueData>) {
 
                 const learnText = normalizeText(c.learn.join(" "));
                 const nativeText = normalizeText(c.native.join(" "));
-
-                subFluentInfo(
-                    "L:", learnText,
-                    "N:", nativeText
-                );
 
                 // cache current cue for end-of-cue dictation trigger
                 curStart = c.ls;
@@ -1408,26 +1696,91 @@ function mergeCuesByTime(cues: CueLike[]): CueLike[] {
 }
 
 // When both subtitles ready, start time-based cue logging
-subFluentDebug("[SubFluent] registering subscribeSubtitlesReady()");
 contentState.subscribeSubtitlesReady(({ movieId, bucket }) => {
     subFluentDebug("[SubFluent] subtitles ready for movieId:", movieId, bucket);
+
+    // bucket: Record<trackKey, StoredTimedText>
+    const entries: StoredTimedText[] = bucket ? (Object.values(bucket as any) as StoredTimedText[]) : [];
+
+    // Desired mapping (settings):
+    // - subtitleLang = learning
+    // - translateLang = native
+    const learningTrackObj = getTimedTextTrackByTrackId(sfSettingSubtitleLang);
+    const nativeTrackObj = getTimedTextTrackByTrackId(sfSettingTranslateLang);
+
+    const toMeta = (t: any | null): TimedTextTrackMeta | null => {
+        if (!t) return null;
+        return {
+            bcp47: t?.bcp47 != null ? String(t.bcp47).toLowerCase() : null,
+            trackType: t?.trackType != null ? String(t.trackType) : null,
+            rawTrackType: (t as any)?.rawTrackType != null ? String((t as any).rawTrackType) : null,
+            // NOTE: timedTextTrackList에는 nttmTextType가 없을 수 있어서 null로 둔다.
+            nttmTextType: null,
+        };
+    };
+
+    const learningMeta = toMeta(learningTrackObj);
+    const nativeMeta = toMeta(nativeTrackObj);
+
+    const norm = (v: any) => String(v ?? "").trim().toLowerCase();
+
+    const metaMatches = (cand: TimedTextTrackMeta, want: TimedTextTrackMeta): boolean => {
+        // Want가 가진 필드만 비교(unknown/null은 무시)
+        if (want.bcp47 && norm(cand.bcp47) !== norm(want.bcp47)) return false;
+        if (want.trackType && String(cand.trackType || "") !== String(want.trackType)) return false;
+        if (want.rawTrackType && String(cand.rawTrackType || "") !== String(want.rawTrackType)) return false;
+        // nttmTextType는 timedTextTrackList에서 못 얻는 경우가 많아서 want가 있으면 비교, 없으면 무시
+        if (want.nttmTextType && norm(cand.nttmTextType) !== norm(want.nttmTextType)) return false;
+        return true;
+    };
+
+    const findByMeta = (want: TimedTextTrackMeta | null): StoredTimedText | undefined => {
+        if (!want) return undefined;
+
+        // 1) key로 직접 매칭(가능하면)
+        try {
+            const k = makeTrackKey(want);
+            const direct = (bucket as any)?.[k] as StoredTimedText | undefined;
+            if (direct?.subtitle) return direct;
+        } catch {
+            // ignore
+        }
+
+        // 2) meta 필드로 스캔 매칭 (bcp47 + (trackType/rawTrackType) 우선)
+        return entries.find((it) => it?.meta && metaMatches(it.meta, want));
+    };
+
+    let learningStored = findByMeta(learningMeta);
+    let nativeStored = findByMeta(nativeMeta);
+
+    // Fallback: pick first two available entries if settings don't match this title
+    if (!learningStored || !nativeStored) {
+        const e1 = entries[0];
+        const e2 = entries[1];
+        if (!learningStored && e1) learningStored = e1;
+        if (!nativeStored && e2) nativeStored = e2;
+    }
+
+    const learningSub = learningStored?.subtitle as any;
+    const nativeSub = nativeStored?.subtitle as any;
+
     subFluentDebug("[SubFluent] bucket flags:", {
-        hasNative: !!bucket?.native,
-        hasLearning: !!bucket?.learning,
-        nativeCueLen: bucket?.native?.cues?.length ?? -1,
-        learningCueLen: bucket?.learning?.cues?.length ?? -1,
+        keys: entries.map((x) => x.key),
+        learningMeta,
+        nativeMeta,
+        learningCueLen: (learningSub?.cues?.length ?? -1),
+        nativeCueLen: (nativeSub?.cues?.length ?? -1),
     });
-    if (!bucket.native || !bucket.learning) return;
+
+    if (!learningSub || !nativeSub) return;
 
     const next = contentState.nextMovieId;
     if (next === movieId) {
         contentState.setMovieId(movieId);
-        //contentState.setNextMovieId(null);
     }
 
-    // bucket.native / bucket.learning 의 cues 배열을 사용
-    const nativeCues = mergeCuesByTime((bucket.native.cues ?? []) as CueLike[]);
-    const learningCues = mergeCuesByTime((bucket.learning.cues ?? []) as CueLike[]);
+    const nativeCues = mergeCuesByTime((nativeSub.cues ?? []) as CueLike[]);
+    const learningCues = mergeCuesByTime((learningSub.cues ?? []) as CueLike[]);
 
     // cache for mode-switch rebuild
     sfLatestMovieId = movieId;
@@ -1440,65 +1793,120 @@ contentState.subscribeSubtitlesReady(({ movieId, bucket }) => {
 // --- TTML URL capture via page hook (pageScript) ---
 const PAGE_HOOK_SOURCE = "SubFluent";
 
-
 // Listen for messages from the injected page hook
 window.addEventListener("message", async (ev) => {
     const d = ev.data;
     if (d?.source !== PAGE_HOOK_SOURCE) return;
 
     if (d?.type === "PLAYER_READY") {
-        // Track lists first (needed for bcp47 <-> trackId mapping)
-        contentState.setMovieId(d.movieId);
-        sfAvailableSubtitleLangs = d.trackList;
-        sfAvailableAudioLangs = d.audioList;
+        // Save player/track info into contentState (single source of truth)
+        contentState.setPlayerReady({
+            movieId: d.movieId ?? null,
+            audioList: (d.audioList ?? []) as AudioTrack[],
+            trackList: (d.trackList ?? []) as TimedTextTrack[],
+            currentAudio: (d.currentAudio ?? null) as AudioTrack | null,
+        });
+
+        // Mirror lists locally for existing mapping/UI code
+        sfAvailableSubtitleLangs = contentState.timedTextTrackList;
+        sfAvailableAudioLangs = contentState.audioList;
+
+        // Initialize non-hardcoded defaults from current title track lists
+        ensureTrackIdDefaultsInitialized();
 
         // Restore persisted prefs
         const prefs = await loadSfPrefs();
 
         // Restore dictation mode immediately (so UI visibility/icon match on refresh)
         sfDictationMode = !!prefs.dictationEnabled;
-        subFluentDebug("[SubFluent] restored dictation mode:", sfDictationMode);
 
         // Also reflect into settings modal state (opened later)
         sfSettingDictationEnabled = sfDictationMode;
 
-        // Restore preferred languages into current title trackIds (best-effort)
-        sfSettingAudioLang = pickAudioTrackIdByBcp47(prefs.preferredAudioBcp47);
-        sfSettingSubtitleLang = pickTimedTrackIdByBcp47(prefs.preferredLearningBcp47);
-        sfSettingTranslateLang = pickTimedTrackIdByBcp47(prefs.preferredTranslateBcp47);
+        // Restore preferred languages into current title trackIds (best-effort, cross-title via criteria)
+        const audioFromPrefs = pickAudioTrackIdByCriteria(prefs.preferredAudio);
+        const subFromPrefs = pickTimedTrackIdByCriteria(prefs.preferredLearning);
+        const trFromPrefs = pickTimedTrackIdByCriteria(prefs.preferredTranslate);
+
+        if (audioFromPrefs) sfSettingAudioLang = audioFromPrefs;
+        if (subFromPrefs) sfSettingSubtitleLang = subFromPrefs;
+        if (trFromPrefs) sfSettingTranslateLang = trFromPrefs;
 
         // Apply UI updates (safe even if buttons not mounted yet)
         updateSubtitleOverlayVisibility();
         updateDictationControlbarIcon();
 
+        // If settings modal is open, keep its selects in sync with latest track lists
+        if (sfSettingsOpen) {
+            refreshSettingsSelects();
+        }
+
         // If subtitles are already cached, rebuild window to match mode
         rebuildCueWindowIfReady();
 
-        subFluentDebug("[SubFluent] PLAYER_READY:", {
-            movieId: d.movieId,
-            trackListLen: d.trackList?.length ?? 0,
-            audioListLen: d.audioList?.length ?? 0,
-            restored: {
-                dictationEnabled: sfDictationMode,
-                preferredAudioBcp47: prefs.preferredAudioBcp47,
-                preferredLearningBcp47: prefs.preferredLearningBcp47,
-                preferredTranslateBcp47: prefs.preferredTranslateBcp47,
-            },
-        });
+        // Build requested timed-text metas using TrackKey (not bcp47-only)
+        const toTimedMeta = (t: any | null, fallbackBcp47: string): TimedTextTrackMeta => {
+            const b = String(t?.bcp47 ?? fallbackBcp47 ?? "").toLowerCase();
+            return {
+                bcp47: b || null,
+                trackType: t?.trackType != null ? String(t.trackType) : null,
+                rawTrackType: (t as any)?.rawTrackType != null ? String((t as any).rawTrackType) : null,
+                // If you later parse nttm:textType from TTML, you can fill this.
+                nttmTextType: null,
+            };
+        };
+
+        // Prefer the current title's selected trackIds (most accurate), otherwise fall back to stored prefs.
+        const learningTrackObj = getTimedTextTrackByTrackId(sfSettingSubtitleLang);
+        const translateTrackObj = getTimedTextTrackByTrackId(sfSettingTranslateLang);
+
+        const learningMeta: TimedTextTrackMeta = learningTrackObj
+            ? toTimedMeta(learningTrackObj as any, "en")
+            : {
+                bcp47: prefs.preferredLearning?.bcp47 ? String(prefs.preferredLearning.bcp47).toLowerCase() : "en",
+                trackType: prefs.preferredLearning?.trackType != null ? String(prefs.preferredLearning.trackType) : null,
+                rawTrackType: prefs.preferredLearning?.rawTrackType != null ? String(prefs.preferredLearning.rawTrackType) : null,
+                nttmTextType: null,
+            };
+
+        const translateMeta: TimedTextTrackMeta = translateTrackObj
+            ? toTimedMeta(translateTrackObj as any, "en")
+            : {
+                bcp47: prefs.preferredTranslate?.bcp47 ? String(prefs.preferredTranslate.bcp47).toLowerCase() : "en",
+                trackType: prefs.preferredTranslate?.trackType != null ? String(prefs.preferredTranslate.trackType) : null,
+                rawTrackType: prefs.preferredTranslate?.rawTrackType != null ? String(prefs.preferredTranslate.rawTrackType) : null,
+                nttmTextType: null,
+            };
+
+        const learningKey = makeTrackKey(learningMeta);
+        const translateKey = makeTrackKey(translateMeta);
+        subFluentDebug("REQUEST:", learningMeta, translateMeta);
+
+        if (contentState.getSubtitlesState(d.movieId) === "waiting0" || contentState.getSubtitlesState(d.movieId) === "waiting1") {
+            // TrackKey/meta-based request payload (pageHook should use these metas to pick exact tracks)
+            window.postMessage(
+                {
+                    type: "SF_REQUEST_TimedText",
+                    source: "SubFluent",
+                    items: [
+                        { subType: "learning", key: learningKey, meta: learningMeta },
+                        { subType: "translate", key: translateKey, meta: translateMeta },
+                    ],
+                },
+                "*"
+            );
+        }
     }
 
     if (d?.type === "TTML_TEXT") {
         const movieId = d.movieId as string;
-        const lang = d.langType as string;
+        const trackMeta = d.trackMeta
         const raw = d.ttml as string;
 
-        subFluentDebug("[SubFluent] TTML_TEXT received:", {
-            movieId,
-            lang,
-            ttmlLen: raw?.length ?? 0,
-            currentMovieId: (contentState as any).movieId ?? undefined,
-            nextMovieId: (contentState as any).nextMovieId ?? undefined,
-        });
+        subFluentDebug("TTML_TEXT", d);
+
+        // parse first so we can preview in logs
+        const ttmlSubtitle = parseTtmlSubtitle(raw);
 
         // Robustness: ensure movieId is set so downstream 'ready' computation can complete.
         try {
@@ -1507,15 +1915,7 @@ window.addEventListener("message", async (ev) => {
             // ignore
         }
 
-        const ttmlSubtitle = parseTtmlSubtitle(raw);
-        contentState.setSubtitleForMovie(movieId, lang, ttmlSubtitle);
-
-        subFluentDebug("[SubFluent] setSubtitleForMovie done:", {
-            movieId,
-            lang,
-            state: contentState.getSubtitlesState(movieId),
-        });
-
+        contentState.setSubtitleForMovie(movieId, trackMeta, ttmlSubtitle);
         return;
     }
 });
@@ -1552,9 +1952,7 @@ function toggleDictationMode(next?: boolean) {
     rebuildCueWindowIfReady();
     updateSubtitleOverlayVisibility();
     updateDictationControlbarIcon();
-    void saveSfPrefs({ dictationEnabled: sfDictationMode }).then(() => {
-        chrome.storage.local.get("sf_settings_v1", console.log);
-    });
+    void saveSfPrefs({ dictationEnabled: sfDictationMode });
 }
 
 function onDictationControlbarClick(ev: MouseEvent) {
@@ -1562,8 +1960,6 @@ function onDictationControlbarClick(ev: MouseEvent) {
     ev.stopPropagation();
 
     toggleDictationMode();
-
-    subFluentDebug("[SubFluent] dictation toggled:", sfDictationMode);
 }
 
 function onSettingsControlbarClick(ev: MouseEvent) {
