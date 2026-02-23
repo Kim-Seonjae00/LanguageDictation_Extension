@@ -4,6 +4,7 @@
 
 import { type TtmlSubtitle } from "../../shared/ttmlParser";
 import type { TimedTextTrack, AudioTrack } from "../../shared/protocol";
+import { subFluentDebug } from "../../shared/util";
 
 // Subtitles are stored by a normalized track-meta key (not just BCP-47).
 // Reason: same bcp47 can exist as CC vs SUB, Assistive vs Primary, etc.
@@ -14,8 +15,6 @@ export type TimedTextTrackMeta = {
   bcp47: string | null;
   trackType: string | null;
   rawTrackType: string | null;
-  // Optional: when available from TTML metadata (e.g., CC / SUBS)
-  nttmTextType?: string | null;
 };
 
 export type StoredTimedText = {
@@ -30,8 +29,7 @@ export function makeTrackKey(meta: TimedTextTrackMeta): TrackKey {
   const b = meta?.bcp47 ? norm(meta.bcp47) : "";
   const tt = meta?.trackType ? norm(meta.trackType) : "";
   const rt = meta?.rawTrackType ? norm(meta.rawTrackType) : "";
-  const tx = meta?.nttmTextType ? norm(meta.nttmTextType) : "";
-  return `${b}|${tt}|${rt}|${tx}`;
+  return `${b}|${tt}|${rt}`;
 }
 
 export type SubtitlesState = "waiting0" | "waiting1" | "ready" | "active";
@@ -212,15 +210,15 @@ export class ContentState {
 
     const meta: TimedTextTrackMeta = {
       bcp47: trackMeta?.bcp47 != null ? norm(trackMeta.bcp47) : null,
-      trackType: trackMeta?.trackType != null ? String(trackMeta.trackType) : null,
-      rawTrackType: trackMeta?.rawTrackType != null ? String(trackMeta.rawTrackType) : null,
-      nttmTextType: (trackMeta as any)?.nttmTextType != null ? norm((trackMeta as any).nttmTextType) : null,
+      trackType: trackMeta?.trackType != null ? norm(trackMeta.trackType) : null,
+      rawTrackType: trackMeta?.rawTrackType != null ? norm(trackMeta.rawTrackType) : null,
     };
 
     const key = makeTrackKey(meta);
     if (!key) return;
 
     const stored: StoredTimedText = { key, meta, subtitle };
+    subFluentDebug("[contentState] stored key:", key, meta);
     bucket.set(key, stored);
 
     // "ready" heuristic: at least 2 distinct entries cached for this movieId.

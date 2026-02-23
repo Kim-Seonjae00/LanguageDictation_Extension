@@ -1,6 +1,6 @@
 import { Msg, type DictationResult, type SendDictation, type ExtMessage, type TimedTextTrack, type AudioTrack } from "../shared/protocol";
 import { parseTtmlSubtitle } from "../shared/ttmlParser";
-import { setSubFluentLogLevel, subFluentDebug } from "../shared/util";
+import { setSubFluentLogLevel, subFluentDebug,subFluentError } from "../shared/util";
 import { contentState, makeTrackKey, type TimedTextTrackMeta, type StoredTimedText } from "./state/contentState";
 
 setSubFluentLogLevel("DEBUG");
@@ -434,6 +434,7 @@ function ensureDictationOverlay() {
     rightBtns.appendChild(closeBtn);
 
     nextBtn.addEventListener("click", () => {
+        if(sfInput) sfInput.value = "";
         hideDictationOverlay(false);
     });
 
@@ -1055,6 +1056,13 @@ function ensureSettingsOverlay() {
         // Apply audio immediately if changed
         const prevPref = await loadSfPrefs();
         const prevAudio:SfTrackCriteria = prevPref.preferredAudio;
+        const sameCriteria = (a?: SfTrackCriteria | null, b?: SfTrackCriteria | null) => {
+            return (
+                (a?.bcp47 ?? null) === (b?.bcp47 ?? null) &&
+                (a?.trackType ?? null) === (b?.trackType ?? null) &&
+                (a?.rawTrackType ?? null) === (b?.rawTrackType ?? null)
+            );
+        };
 
         // Store only criteria (cross-title stable)
         const audioTrackObj = getAudioTrackByTrackId(sfSettingAudioLang);
@@ -1086,37 +1094,89 @@ function ensureSettingsOverlay() {
             );
         }
 
-        // Always request TTML for the currently selected subtitle/translate languages.
+        // Request TTML only when subtitle/translate prefs changed.
         // Use meta/key-based request so we can disambiguate same-bcp47 tracks (e.g., en SUB vs en CC).
         // If selection/meta is missing, default bcp47 to English ("en").
-        const learningMeta: TimedTextTrackMeta = {
-            bcp47: nextLearning.bcp47 || "en",
-            trackType: nextLearning.trackType || null,
-            rawTrackType: nextLearning.rawTrackType || null,
-            nttmTextType: null,
-        };
+        const learningChanged = !sameCriteria(prevPref.preferredLearning, nextLearning);
+        const translateChanged = !sameCriteria(prevPref.preferredTranslate, nextTranslate);
 
-        const translateMeta: TimedTextTrackMeta = {
-            bcp47: nextTranslate.bcp47 || "en",
-            trackType: nextTranslate.trackType || null,
-            rawTrackType: nextTranslate.rawTrackType || null,
-            nttmTextType: null,
-        };
+        if (learningChanged || translateChanged) {
+            const items: Array<{ subType: "learning" | "translate"; key: string; meta: TimedTextTrackMeta }> = [];
+            const movieId = contentState.movieId;
+            if(!movieId) return;
+            const bucket = contentState.getBucket(movieId);
+            let appliedCached = false;
 
-        subFluentDebug("REQUEST:", learningMeta, translateMeta);
+            if (learningChanged) {
+                const learningMeta: TimedTextTrackMeta = {
+                    bcp47: (nextLearning.bcp47 || "en").trim().toLowerCase(),
+                    trackType: nextLearning.trackType ? String(nextLearning.trackType).trim().toLowerCase() : null,
+                    rawTrackType: nextLearning.rawTrackType ? String(nextLearning.rawTrackType).trim().toLowerCase() : null,
+                };
+                const trackKey = makeTrackKey(learningMeta);
+                if(!bucket?.has(trackKey)){
+                    items.push({ subType: "learning", key: makeTrackKey(learningMeta), meta: learningMeta });
+                }else{
+                    try{
+                        const cached: any = bucket?.get(trackKey as any);
+                        const sub: any = cached?.subtitle;
+                        const cues: any[] = Array.isArray(sub?.cues) ? sub.cues : [];
+                        if (cues.length > 0) {
+                            const merged = mergeCuesByTime(cues as CueLike[]);
+                            sfLatestMovieId = movieId;
+                            sfLatestLearningMerged = merged;
+                        } 
+                    } catch (e) {
+                        subFluentError("[SubFluent] failed to apply cached translate from bucket:", e);
+                    }
+                }
+            }
 
+            if (translateChanged) {
+                const translateMeta: TimedTextTrackMeta = {
+                    bcp47: (nextTranslate.bcp47 || "en").trim().toLowerCase(),
+                    trackType: nextTranslate.trackType ? String(nextTranslate.trackType).trim().toLowerCase() : null,
+                    rawTrackType: nextTranslate.rawTrackType ? String(nextTranslate.rawTrackType).trim().toLowerCase() : null,
+                };
+                const trackKey = makeTrackKey(translateMeta);
+                if(!bucket?.has(trackKey)) {
+                    items.push({ subType: "translate", key: makeTrackKey(translateMeta), meta: translateMeta });
+                } else {
+                    // ✅ bucket에 이미 있으면 요청 스킵 + 즉시 적용(translate만 교체)
+                    try {
+                        const cached: any = bucket?.get(trackKey as any);
+                        const sub: any = cached?.subtitle;
+                        const cues: any[] = Array.isArray(sub?.cues) ? sub.cues : [];
+                        if (cues.length > 0) {
+                            const merged = mergeCuesByTime(cues as CueLike[]);
+                            sfLatestMovieId = movieId;
+                            sfLatestNativeMerged = merged;
+                            appliedCached = true;
+                        } 
+                    } catch (e) {
+                        subFluentError("[SubFluent] failed to apply cached translate from bucket:", e);
+                    }
+                }
+            }
 
-        window.postMessage(
-            {
-                type: "SF_REQUEST_TimedText",
-                source: "SubFluent",
-                items: [
-                    { subType: "learning", key: makeTrackKey(learningMeta), meta: learningMeta },
-                    { subType: "translate", key: makeTrackKey(translateMeta), meta: translateMeta },
-                ],
-            },
-            "*"
-        );
+            if(items.length > 0){
+                window.postMessage(
+                    {
+                        type: "SF_REQUEST_TimedText",
+                        source: "SubFluent",
+                        items,
+                    },
+                    "*"
+                );
+
+                // // ✅ 일부(예: translate)가 bucket 캐시에 이미 있었으면, 요청 응답 기다리지 말고 즉시 UI 반영
+                // if (appliedCached) {
+                //     rebuildCueWindowIfReady();
+                // }
+            }else{
+                rebuildCueWindowIfReady();
+            }
+        }
 
         await saveSfPrefs({
             dictationEnabled: sfSettingDictationEnabled,
@@ -1302,7 +1362,6 @@ function escapeHtml(s: string) {
 function startCueLogging(movieId: string, subtitleMap: Map<string, CueData>) {
     // stop previous loop
     stopCueLogging?.();
-    //subFluentDebug("startCueLogging for movieId:", movieId);
 
     let running = true;
     let lastVideo: HTMLVideoElement | null = null;
@@ -1310,7 +1369,7 @@ function startCueLogging(movieId: string, subtitleMap: Map<string, CueData>) {
     let lastLearningKey: string | null = null;
 
     // Dictation: cue 끝나기 아주 직전에 트리거 (더 늦게 = 끝에 가깝게)
-    const DICTATION_LEAD_SEC = 0.25; // 80ms (추천: 0.05~0.15)
+    const DICTATION_LEAD_SEC = 0.05; // 80ms (추천: 0.05~0.15)
 
     let curStart = 0;
     let curEnd = 0;
@@ -1448,7 +1507,6 @@ function startCueLogging(movieId: string, subtitleMap: Map<string, CueData>) {
         sfLastDictationKey = null;
         clearSubtitleText();
         updateSubtitleOverlayVisibility();
-        subFluentDebug("stopCueLogging for movieId:", movieId);
     };
 }
 
@@ -1630,11 +1688,14 @@ contentState.subscribeMovieId((next) => {
 });
 
 
-window.addEventListener("beforeunload", () => {
+// NOTE: Netflix is SPA; `beforeunload` may not fire on back/route changes.
+// We keep a lightweight fallback for real unloads only.
+window.addEventListener("pagehide", () => {
     stopCueLogging?.();
     stopCueLogging = null;
 
     stopPlayerObserver();
+    subFluentDebug("pagehide");
 });
 
 function mergeCuesByTime(cues: CueLike[]): CueLike[] {
@@ -1697,8 +1758,6 @@ function mergeCuesByTime(cues: CueLike[]): CueLike[] {
 
 // When both subtitles ready, start time-based cue logging
 contentState.subscribeSubtitlesReady(({ movieId, bucket }) => {
-    subFluentDebug("[SubFluent] subtitles ready for movieId:", movieId, bucket);
-
     // bucket: Record<trackKey, StoredTimedText>
     const entries: StoredTimedText[] = bucket ? (Object.values(bucket as any) as StoredTimedText[]) : [];
 
@@ -1714,8 +1773,6 @@ contentState.subscribeSubtitlesReady(({ movieId, bucket }) => {
             bcp47: t?.bcp47 != null ? String(t.bcp47).toLowerCase() : null,
             trackType: t?.trackType != null ? String(t.trackType) : null,
             rawTrackType: (t as any)?.rawTrackType != null ? String((t as any).rawTrackType) : null,
-            // NOTE: timedTextTrackList에는 nttmTextType가 없을 수 있어서 null로 둔다.
-            nttmTextType: null,
         };
     };
 
@@ -1729,8 +1786,6 @@ contentState.subscribeSubtitlesReady(({ movieId, bucket }) => {
         if (want.bcp47 && norm(cand.bcp47) !== norm(want.bcp47)) return false;
         if (want.trackType && String(cand.trackType || "") !== String(want.trackType)) return false;
         if (want.rawTrackType && String(cand.rawTrackType || "") !== String(want.rawTrackType)) return false;
-        // nttmTextType는 timedTextTrackList에서 못 얻는 경우가 많아서 want가 있으면 비교, 없으면 무시
-        if (want.nttmTextType && norm(cand.nttmTextType) !== norm(want.nttmTextType)) return false;
         return true;
     };
 
@@ -1763,14 +1818,6 @@ contentState.subscribeSubtitlesReady(({ movieId, bucket }) => {
 
     const learningSub = learningStored?.subtitle as any;
     const nativeSub = nativeStored?.subtitle as any;
-
-    subFluentDebug("[SubFluent] bucket flags:", {
-        keys: entries.map((x) => x.key),
-        learningMeta,
-        nativeMeta,
-        learningCueLen: (learningSub?.cues?.length ?? -1),
-        nativeCueLen: (nativeSub?.cues?.length ?? -1),
-    });
 
     if (!learningSub || !nativeSub) return;
 
@@ -1806,6 +1853,8 @@ window.addEventListener("message", async (ev) => {
             trackList: (d.trackList ?? []) as TimedTextTrack[],
             currentAudio: (d.currentAudio ?? null) as AudioTrack | null,
         });
+        const movieId = d.movieId;
+        contentState.setMovieId(movieId);
 
         // Mirror lists locally for existing mapping/UI code
         sfAvailableSubtitleLangs = contentState.timedTextTrackList;
@@ -1851,10 +1900,30 @@ window.addEventListener("message", async (ev) => {
                 bcp47: b || null,
                 trackType: t?.trackType != null ? String(t.trackType) : null,
                 rawTrackType: (t as any)?.rawTrackType != null ? String((t as any).rawTrackType) : null,
-                // If you later parse nttm:textType from TTML, you can fill this.
-                nttmTextType: null,
             };
         };
+
+        // Receive prefetch TTML payload (from pageHook)
+        try {
+            const pre = (d as any)?.prefetchTimedText;
+            if (Array.isArray(pre) && pre.length > 0) {
+                // Feed prefetched TTML into contentState immediately (so bucket has initial subtitles)
+                for (const it of pre) {
+                    try {
+                        const ttml = String((it as any)?.ttml || "");
+                        const meta = (it as any)?.meta as TimedTextTrackMeta | undefined;
+                        if (!ttml || !meta) continue;
+
+                        const ttmlSubtitle = parseTtmlSubtitle(ttml);
+                        contentState.setSubtitleForMovie(movieId, meta, ttmlSubtitle);
+                    } catch (e) {
+                        subFluentError("[SubFluent] prefetch item parse/store failed:", e);
+                    }
+                }
+            }
+        } catch (e) {
+            subFluentError("[SubFluent] PLAYER_READY prefetchTimedText parse failed:", e);
+        }
 
         // Prefer the current title's selected trackIds (most accurate), otherwise fall back to stored prefs.
         const learningTrackObj = getTimedTextTrackByTrackId(sfSettingSubtitleLang);
@@ -1866,7 +1935,6 @@ window.addEventListener("message", async (ev) => {
                 bcp47: prefs.preferredLearning?.bcp47 ? String(prefs.preferredLearning.bcp47).toLowerCase() : "en",
                 trackType: prefs.preferredLearning?.trackType != null ? String(prefs.preferredLearning.trackType) : null,
                 rawTrackType: prefs.preferredLearning?.rawTrackType != null ? String(prefs.preferredLearning.rawTrackType) : null,
-                nttmTextType: null,
             };
 
         const translateMeta: TimedTextTrackMeta = translateTrackObj
@@ -1875,23 +1943,54 @@ window.addEventListener("message", async (ev) => {
                 bcp47: prefs.preferredTranslate?.bcp47 ? String(prefs.preferredTranslate.bcp47).toLowerCase() : "en",
                 trackType: prefs.preferredTranslate?.trackType != null ? String(prefs.preferredTranslate.trackType) : null,
                 rawTrackType: prefs.preferredTranslate?.rawTrackType != null ? String(prefs.preferredTranslate.rawTrackType) : null,
-                nttmTextType: null,
             };
 
         const learningKey = makeTrackKey(learningMeta);
         const translateKey = makeTrackKey(translateMeta);
-        subFluentDebug("REQUEST:", learningMeta, translateMeta);
 
         if (contentState.getSubtitlesState(d.movieId) === "waiting0" || contentState.getSubtitlesState(d.movieId) === "waiting1") {
-            // TrackKey/meta-based request payload (pageHook should use these metas to pick exact tracks)
+            const items:Array<{subType:"learning"| "translate",key:string,meta:TimedTextTrackMeta}> = [];
+            const bucket = contentState.getBucket(movieId);
+
+            if(!bucket?.has(learningKey)){
+                items.push({subType:"learning",key:learningKey,meta:learningMeta});
+            }else {
+                try{
+                    const cached: any = bucket?.get(learningKey as any);
+                    const sub: any = cached?.subtitle;
+                    const cues: any[] = Array.isArray(sub?.cues) ? sub.cues : [];
+                    if (cues.length > 0) {
+                        const merged = mergeCuesByTime(cues as CueLike[]);
+                        sfLatestMovieId = movieId;
+                        sfLatestLearningMerged = merged;
+                    }
+                } catch (e) {
+                    subFluentError("[SubFluent] failed to apply cached translate from bucket:", e);
+                }
+            }
+            
+            if(!bucket?.has(translateKey)){
+                items.push({subType:"translate",key:translateKey,meta:translateMeta});
+            }else {
+                try{
+                    const cached: any = bucket?.get(translateKey as any);
+                    const sub: any = cached?.subtitle;
+                    const cues: any[] = Array.isArray(sub?.cues) ? sub.cues : [];
+                    if (cues.length > 0) {
+                        const merged = mergeCuesByTime(cues as CueLike[]);
+                        sfLatestMovieId = movieId;
+                        sfLatestNativeMerged = merged;
+                    }
+                } catch (e) {
+                    subFluentError("[SubFluent] failed to apply cached translate from bucket:", e);
+                }
+            }
+
             window.postMessage(
                 {
                     type: "SF_REQUEST_TimedText",
                     source: "SubFluent",
-                    items: [
-                        { subType: "learning", key: learningKey, meta: learningMeta },
-                        { subType: "translate", key: translateKey, meta: translateMeta },
-                    ],
+                    items: items,
                 },
                 "*"
             );
@@ -1903,18 +2002,8 @@ window.addEventListener("message", async (ev) => {
         const trackMeta = d.trackMeta
         const raw = d.ttml as string;
 
-        subFluentDebug("TTML_TEXT", d);
-
         // parse first so we can preview in logs
         const ttmlSubtitle = parseTtmlSubtitle(raw);
-
-        // Robustness: ensure movieId is set so downstream 'ready' computation can complete.
-        try {
-            contentState.setMovieId(movieId);
-        } catch {
-            // ignore
-        }
-
         contentState.setSubtitleForMovie(movieId, trackMeta, ttmlSubtitle);
         return;
     }
@@ -1928,6 +2017,31 @@ function getPlayerEl(): HTMLElement | null {
 let lastPlayerEl: HTMLElement | null = null;
 let stopWatchFlagContainer: (() => void) | null = null;
 let rootPlayerObserver: MutationObserver | null = null;
+
+// Cleanup when player is removed/replaced (SPA route/back)
+function cleanupOnPlayerRemoved(reason: string) {
+    try {
+        subFluentDebug("[SubFluent] player removed:", reason);
+
+        // stop cue loop + hide overlays
+        stopCueLogging?.();
+        stopCueLogging = null;
+
+        hideDictationOverlay(false);
+        sfLastDictationKey = null;
+        clearSubtitleText();
+        updateSubtitleOverlayVisibility();
+
+        // unmount controlbar watchers
+        stopWatchFlagContainer?.();
+        stopWatchFlagContainer = null;
+
+        // clear mount marker so next player re-mount works
+        lastPlayerEl = null;
+    } catch {
+        // ignore
+    }
+}
 
 function getFlagContainer(root: ParentNode = document): HTMLElement | null {
     return root.querySelector(".watch-video--flag-container") as HTMLElement | null;
@@ -2147,14 +2261,22 @@ function watchFlagContainerUnderPlayer(playerEl: HTMLElement, onChange: (el: HTM
 
 function attachPlayerObserver() {
     const playerEl = getPlayerEl();
-    if (!playerEl) return;
+
+    // Player removed (SPA route/back)
+    if (!playerEl) {
+        if (lastPlayerEl) {
+            cleanupOnPlayerRemoved("playerEl missing");
+        }
+        return;
+    }
 
     // Same element -> nothing to do
     if (lastPlayerEl === playerEl) return;
 
     // Player element changed: stop old watcher and attach a new one
-    stopWatchFlagContainer?.();
-    stopWatchFlagContainer = null;
+    if (lastPlayerEl) {
+        cleanupOnPlayerRemoved("playerEl replaced");
+    }
 
     lastPlayerEl = playerEl;
 
@@ -2178,6 +2300,7 @@ function startPlayerObserver() {
 
     // Watch for Netflix SPA rerenders that replace the player element
     rootPlayerObserver = new MutationObserver(() => {
+        // Re-attach or cleanup depending on current DOM state
         attachPlayerObserver();
     });
 
@@ -2191,8 +2314,10 @@ function stopPlayerObserver() {
     stopWatchFlagContainer?.();
     stopWatchFlagContainer = null;
 
-    rootPlayerObserver?.disconnect();
-    rootPlayerObserver = null;
+    if (rootPlayerObserver) {
+        rootPlayerObserver.disconnect();
+        rootPlayerObserver = null;
+    }
 
     lastPlayerEl = null;
 }
