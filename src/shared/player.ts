@@ -49,6 +49,7 @@ export type PlayerFacade = {
         // --- text / timed text ---
         getTextTrack?: () => any;
         getTextTrackList?: (h: any) => any;
+        setTextTrack?: (track:any) => any;
 
         getTimedTextTrack: () => any;
         getTimedTextTrackList: (h?: any) => any;

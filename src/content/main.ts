@@ -875,8 +875,6 @@ function ensureSettingsOverlay() {
     topBar.appendChild(closeBtn);
 
     const desc = document.createElement("div");
-    desc.textContent =
-        "현재 타이틀의 오디오/자막 트랙을 기반으로 설정합니다. (타이틀이 바뀌면 목록도 바뀜)";
     desc.style.fontSize = "13px";
     desc.style.opacity = "0.78";
     desc.style.marginBottom = "10px";
@@ -898,7 +896,7 @@ function ensureSettingsOverlay() {
         sel.value = hasCur ? cur : ((opts[0]?.trackId as string) || "");
     };
 
-    const makeRow = (label: string, help: string, bodyEl: HTMLElement) => {
+    const makeRow = (label: string, bodyEl: HTMLElement) => {
         const row = document.createElement("div");
         row.style.display = "grid";
         row.style.gridTemplateColumns = "1fr";
@@ -919,13 +917,8 @@ function ensureSettingsOverlay() {
         t.style.fontSize = "14px";
         t.style.fontWeight = "750";
 
-        const h = document.createElement("div");
-        h.textContent = help;
-        h.style.fontSize = "12px";
-        h.style.opacity = "0.72";
 
         head.appendChild(t);
-        head.appendChild(h);
 
         // If the row body is a <select>, apply select styling
         if (bodyEl instanceof HTMLSelectElement) {
@@ -1029,10 +1022,10 @@ function ensureSettingsOverlay() {
         sfSettingTranslateLang = trSel.value;
     });
 
-    sectionWrap.appendChild(makeRow("받아쓰기 설정", "토글", dictToggleWrap));
-    sectionWrap.appendChild(makeRow("오디오 언어 설정", "더미 목록", audioSel));
-    sectionWrap.appendChild(makeRow("자막 언어 설정", "더미 목록", subSel));
-    sectionWrap.appendChild(makeRow("번역 언어 설정", "더미 목록", trSel));
+    sectionWrap.appendChild(makeRow("받아쓰기 설정", dictToggleWrap));
+    sectionWrap.appendChild(makeRow("오디오 언어 설정", audioSel));
+    sectionWrap.appendChild(makeRow("자막 언어 설정",  subSel));
+    sectionWrap.appendChild(makeRow("번역 언어 설정", trSel));
 
     const footer = document.createElement("div");
     footer.style.display = "flex";
@@ -1042,12 +1035,13 @@ function ensureSettingsOverlay() {
 
     const applyBtn = document.createElement("button");
     applyBtn.type = "button";
-    applyBtn.textContent = "적용(더미)";
+    applyBtn.textContent = "적용";
     applyBtn.style.padding = "10px 14px";
     applyBtn.style.borderRadius = "12px";
     applyBtn.style.border = "1px solid rgba(255,255,255,0.14)";
     applyBtn.style.background = "rgba(255,255,255,0.12)";
     applyBtn.style.color = "#fff";
+    applyBtn.style.fontSize = "14px"
     applyBtn.style.cursor = "pointer";
     applyBtn.addEventListener("click", async (e) => {
         // Apply dictation ON/OFF (즉시 반영)
@@ -1855,6 +1849,7 @@ window.addEventListener("message", async (ev) => {
         });
         const movieId = d.movieId;
         contentState.setMovieId(movieId);
+        startHideNetflixTimedTextObserver();
 
         // Mirror lists locally for existing mapping/UI code
         sfAvailableSubtitleLangs = contentState.timedTextTrackList;
@@ -1905,10 +1900,11 @@ window.addEventListener("message", async (ev) => {
 
         // Receive prefetch TTML payload (from pageHook)
         try {
-            const pre = (d as any)?.prefetchTimedText;
-            if (Array.isArray(pre) && pre.length > 0) {
+            const preRaw = (d as any)?.prefetchTimedText;
+            const preItems = Array.isArray(preRaw) ? preRaw : preRaw ? [preRaw] : [];
+            if (preItems.length > 0) {
                 // Feed prefetched TTML into contentState immediately (so bucket has initial subtitles)
-                for (const it of pre) {
+                for (const it of preItems) {
                     try {
                         const ttml = String((it as any)?.ttml || "");
                         const meta = (it as any)?.meta as TimedTextTrackMeta | undefined;
@@ -2009,6 +2005,52 @@ window.addEventListener("message", async (ev) => {
     }
 });
 
+// --- Netflix native subtitle layer toggle (do NOT remove, just hide) ---
+function setNetflixTimedTextVisible(visible: boolean) {
+    const el = document.querySelector('div.player-timedtext') as HTMLElement | null;
+    if (!el) return;
+
+    // store original display once
+    const ds = el.dataset as any;
+    if (ds.sfOrigDisplay == null) {
+        ds.sfOrigDisplay = el.style.display || "";
+    }
+
+    if (visible) {
+        el.style.display = ds.sfOrigDisplay || "";
+        el.removeAttribute("aria-hidden");
+    } else {
+        el.style.display = "none";
+        el.setAttribute("aria-hidden", "true");
+    }
+}
+
+function hideNetflixTimedText() {
+    setNetflixTimedTextVisible(false);
+}
+let sfHideNfTimedTextObserver: MutationObserver | null = null;
+
+function startHideNetflixTimedTextObserver() {
+  if (sfHideNfTimedTextObserver) return;
+
+  // 1) 즉시 1회 숨김
+  hideNetflixTimedText();
+
+  // 2) Netflix SPA 리렌더로 자막 레이어가 재생성되므로 계속 숨김 유지
+  sfHideNfTimedTextObserver = new MutationObserver(() => {
+    hideNetflixTimedText();
+  });
+
+  const root = document.documentElement || document.body;
+  sfHideNfTimedTextObserver.observe(root, { childList: true, subtree: true });
+}
+
+function stopHideNetflixTimedTextObserver() {
+  if (!sfHideNfTimedTextObserver) return;
+  sfHideNfTimedTextObserver.disconnect();
+  sfHideNfTimedTextObserver = null;
+}
+
 function getPlayerEl(): HTMLElement | null {
     return document.querySelector('div[data-uia="player"]') as HTMLElement | null;
 }
@@ -2038,13 +2080,20 @@ function cleanupOnPlayerRemoved(reason: string) {
 
         // clear mount marker so next player re-mount works
         lastPlayerEl = null;
+        stopHideNetflixTimedTextObserver();
     } catch {
         // ignore
     }
 }
 
+
 function getFlagContainer(root: ParentNode = document): HTMLElement | null {
     return root.querySelector(".watch-video--flag-container") as HTMLElement | null;
+}
+
+function getFlagContainerForAudioSubtitleButton(): HTMLButtonElement | null {
+    const btn = document.querySelector('button[data-uia="control-audio-subtitle"]') as HTMLButtonElement | null;
+    return btn || null;
 }
 
 // --- Controlbar button handlers (reusable) ---
@@ -2060,6 +2109,7 @@ function toggleDictationMode(next?: boolean) {
         sfLastDictationKey = null;
     } else {
         // 켤 때는 자막 UI 비활성화(숨김) + 텍스트도 비워둠(선택)
+        hideNetflixTimedText();
         clearSubtitleText();
     }
 
@@ -2126,9 +2176,20 @@ function mountSubFluentControls(flagEl: HTMLElement) {
         }
     }
 
-    const wrapClass = "nf-medium " + (flagEl.children[0]?.classList.value || "");
-    const btnClass = "nf-btn " + (flagEl.children[0].children[0]?.classList.value || "");
-    const controlClass = "nf-control " + (flagEl.children[0].children[0].children[0]?.classList.value || "");
+    // Netflix may recreate/empty the flag container during SPA rerenders.
+    // Guard against missing structure to avoid crashing the observer.
+    const firstWrap = flagEl.children?.[0] as HTMLElement | undefined;
+    const firstBtn = (firstWrap?.children?.[0] as HTMLElement | undefined) ?? undefined;
+    const firstControl = (firstBtn?.children?.[0] as HTMLElement | undefined) ?? undefined;
+
+    // If Netflix hasn't rendered any control button yet, bail out and let the watcher call us again.
+    if (!firstWrap || !firstBtn || !firstControl) {
+        return;
+    }
+
+    const wrapClass = "nf-medium " + (firstWrap.classList?.value || "");
+    const btnClass = "nf-btn " + (firstBtn.classList?.value || "");
+    const controlClass = "nf-control " + (firstControl.classList?.value || "");
 
     // 둘 다 이미 있으면 중복 방지
     if (hasDictation && hasSettings) {
@@ -2222,20 +2283,42 @@ function mountSubFluentControls(flagEl: HTMLElement) {
         updateDictationControlbarIcon();
     }
 
-    // 2) 설정(톱니)
+    // 2) 설정 (기존 Netflix 자막 버튼 자리에 SubFluent 설정 버튼)
     if (!hasSettings) {
+        const origBtn = getFlagContainerForAudioSubtitleButton();
+        if (!origBtn) {
+            // If not found yet, we'll be called again by the watcher.
+            return;
+        }
+
+        // Create our button shell using Netflix classes via createBtn
         const settingsWrap = createBtn({
             ariaLabel: "SubFluent 설정",
             dataUia: "control-subfluent-settings",
-            dataIcon: "SubFluentSettingsMedium",
+            // placeholder (will be replaced by cloned Netflix SVG)
+            dataIcon: "SubtitlesMedium",
             strokeWidth: "2",
-            useGroup: true,
-            groupTransform: "translate(12 12) scale(0.94) translate(-12 -12)",
-            pathD:
-                "M15 12a3 3 0 1 1-6 0a3 3 0 1 1 6 0 M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V22a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z",
+            pathD: "M0 0",
             onClick: onSettingsControlbarClick,
         });
-        flagEl.appendChild(settingsWrap);
+
+        // Clone Netflix subtitle SVG (fill-based icon) and swap into our button
+        const origSvg = origBtn.querySelector("svg") as SVGSVGElement | null;
+        if (origSvg) {
+            const cloned = origSvg.cloneNode(true) as SVGSVGElement;
+            const targetSvg = settingsWrap.querySelector("svg") as SVGSVGElement | null;
+            if (targetSvg) {
+                targetSvg.replaceWith(cloned);
+            }
+        }
+
+        // Replace the whole wrapper (div.medium) to preserve layout
+        const origWrap = (origBtn.closest("div.medium") as HTMLElement | null) ?? (origBtn.parentElement as HTMLElement | null);
+        if (origWrap) {
+            origWrap.replaceWith(settingsWrap);
+        } else {
+            origBtn.replaceWith(settingsWrap);
+        }
     }
 
     // 마커
@@ -2287,6 +2370,7 @@ function attachPlayerObserver() {
         // Avoid double mount
         if (flagEl.dataset.sfMounted === "1") return;
 
+        // Mount on the discovered flag container
         mountSubFluentControls(flagEl);
     });
 }

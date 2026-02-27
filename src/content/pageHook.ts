@@ -50,26 +50,24 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
     };
 
     // Prefetch TTML cache (first-load / non-requested TTML)
+    // We assume prefetch is at most one meaningful item per first-load.
     type PrefetchTrack = {
         key: string;
         meta: TimedTextTrackMeta;
         ttml: string;
         at: number;
     };
-    const makeTrackKey = (m: TimedTextTrackMeta): string => {
-        const b = norm(m?.bcp47);
-        const tt = norm(m?.trackType);
-        const rt = norm(m?.rawTrackType);
-        return `${b}|${tt}|${rt}`;
+
+    const setPrefetchTrack = (t: PrefetchTrack | null) => {
+        const hooks = g[PAGE_NS].hooks;
+        hooks.prefetchTimedText = t;
     };
 
-    const getPrefetchMap = (): Map<string, PrefetchTrack> => {
+    const consumePrefetchTrack = (): PrefetchTrack | null => {
         const hooks = g[PAGE_NS].hooks;
-        // Store as a real Map in page world (safe: pageHook runs in page context)
-        if (!hooks.prefetchTimedText) {
-            hooks.prefetchTimedText = new Map<string, PrefetchTrack>();
-        }
-        return hooks.prefetchTimedText as Map<string, PrefetchTrack>;
+        const t = (hooks.prefetchTimedText as PrefetchTrack | null) ?? null;
+        hooks.prefetchTimedText = null;
+        return t;
     };
 
     // Best-effort synthesize meta when we didn't initiate a request.
@@ -159,6 +157,64 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
         return null;
     };
 
+    // --- TTML sequencing helpers ---
+    // We want to setTimedTextTrack() one-by-one and only move to the next
+    // after the XHR hook has forwarded TTML_TEXT to the content script.
+    type TtmlWaiter = {
+        resolve: () => void;
+        reject: (e: any) => void;
+        timer: any;
+    };
+
+    const getTtmlWaiters = (): TtmlWaiter[] => {
+        const hooks = g[PAGE_NS].hooks;
+        if (!hooks.ttmlWaiters) hooks.ttmlWaiters = [];
+        return hooks.ttmlWaiters as TtmlWaiter[];
+    };
+
+    const hasPendingTtmlWaiter = (): boolean => {
+        try {
+            const q = getTtmlWaiters();
+            return Array.isArray(q) && q.length > 0;
+        } catch {
+            return false;
+        }
+    };
+
+    const notifyNextTtmlArrived = () => {
+        const q = getTtmlWaiters();
+        const w = q.shift();
+        if (!w) return;
+        try {
+            clearTimeout(w.timer);
+        } catch {
+            // ignore
+        }
+        w.resolve();
+    };
+
+    const waitForNextTtmlForward = (timeoutMs = 8000): Promise<void> => {
+        return new Promise<void>((resolve, reject) => {
+            const q = getTtmlWaiters();
+            const w: TtmlWaiter = {
+                resolve,
+                reject,
+                timer: setTimeout(() => {
+                    try {
+                        // remove self if still queued
+                        const idx = q.indexOf(w);
+                        if (idx >= 0) q.splice(idx, 1);
+                    } catch {
+                        // ignore
+                    }
+                    reject(new Error("timeout waiting for TTML_TEXT"));
+                }, timeoutMs),
+            };
+            q.push(w);
+        });
+    };
+    // --- TTML sequencing helpers end ---
+
 
     function createPlayerFacade(p: any): PlayerFacade {
         return {
@@ -212,6 +268,7 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
             // --- text / timed text ---
             getTextTrack: () => p?.getTextTrack?.(),
             getTextTrackList: (h?: any) => p?.getTextTrackList?.(h),
+            setTextTrack: (track: any) => p?.setTextTrack?.(track),
 
             getTimedTextTrack: () => p?.getTimedTextTrack?.(),
             getTimedTextTrackList: (h?: any) => p?.getTimedTextTrackList?.(h),
@@ -266,7 +323,6 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
         };
         if (d.type === "SF_REQUEST_TimedText") {
             if (!playerFacade?.setTimedTextTrack) return;
-
             // NOTE: do NOT trust track objects coming from postMessage (structured clone breaks them).
             // Always resolve real track objects from the live player list in page world.
             const list = playerFacade?.getTimedTextTrackList?.() as any[] | undefined;
@@ -333,18 +389,41 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
                 }
 
                 (async () => {
-                    for (const it of items) {
-                        const track = resolveTimedTextTrackByMeta(it.meta, list);
-                        if (!track) continue;
-                        try {
-                            await Promise.resolve(playerFacade.setTimedTextTrack(track));
-                        } catch (e) {
-                            subFluentError(
-                                "[pageHook] setTimedTextTrack failed (items):",
-                                { subType: it.subType, bcp47: it?.meta?.bcp47, trackId: track?.trackId },
-                                e
-                            );
+                    try {
+                        const seen = new Set<string>();
+                        let lastTrackId = "";
+                        for (const it of items) {
+                            const track = resolveTimedTextTrackByMeta(it.meta, list);
+                            if (!track) continue;
+
+                            const tid = String(track?.trackId || "");
+                            // If multiple items map to the same underlying track, Netflix may NOT refetch TTML.
+                            // In that case waiting for TTML_TEXT would timeout, so we dedupe by trackId.
+                            if (tid && seen.has(tid)) {
+                                continue;
+                            }
+                            if (tid) seen.add(tid);
+
+                            try {
+                                await Promise.resolve(playerFacade.setTimedTextTrack(track));
+
+                                // If track didn't actually change, don't wait for a new TTML network fetch.
+                                if (tid && tid === lastTrackId) {
+                                    continue;
+                                }
+                                lastTrackId = tid;
+
+                                await waitForNextTtmlForward(10_000);
+                            } catch (e) {
+                                subFluentError(
+                                    "[pageHook] setTimedTextTrack/TTML sequencing failed (items):",
+                                    { subType: it.subType, bcp47: it?.meta?.bcp47, trackId: track?.trackId },
+                                    e
+                                );
+                            }
                         }
+                    } finally {
+                        setRequestedTimedText([]);
                     }
                 })();
 
@@ -379,15 +458,32 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
             }
 
             (async () => {
-                for (const b of langs) {
-                    const track = findByBcp47(b, list);
-                    if (!track) continue;
-                    try {
-                        // Netflix player sometimes returns a promise; normalize with Promise.resolve
-                        await Promise.resolve(playerFacade.setTimedTextTrack(track));
-                    } catch (e) {
-                        subFluentError("[pageHook] setTimedTextTrack failed:", { bcp47: b, trackId: track?.trackId }, e);
+                try {
+                    const seen = new Set<string>();
+                    let lastTrackId = "";
+                    for (const b of langs) {
+                        const track = findByBcp47(b, list);
+                        if (!track) continue;
+
+                        const tid = String(track?.trackId || "");
+                        if (tid && seen.has(tid)) continue;
+                        if (tid) seen.add(tid);
+
+                        try {
+                            await Promise.resolve(playerFacade.setTimedTextTrack(track));
+
+                            if (tid && tid === lastTrackId) {
+                                continue;
+                            }
+                            lastTrackId = tid;
+
+                            await waitForNextTtmlForward(10_000);
+                        } catch (e) {
+                            subFluentError("[pageHook] setTimedTextTrack/TTML sequencing failed:", { bcp47: b, trackId: track?.trackId }, e);
+                        }
                     }
+                } finally {
+                    setRequestedTimedText([]);
                 }
             })();
         }
@@ -443,7 +539,8 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
         }
 
         try {
-            playerFacade.setTimedTextTrack(noneTrack);
+           // playerFacade.setTimedTextTrack(noneTrack);
+           subFluentDebug("pass initialize");
         } catch (e) {
             subFluentError("[initializeTextTrack] setTimedTextTrack(NONE) failed:", e);
         }
@@ -522,21 +619,25 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
             initializeTextTrack();
             // Prepare PREFETCH TTML payload to include in PLAYER_READY (do NOT post TTML_TEXT before ready)
             // Most-recent-first so content can optionally apply latest cached subtitles first.
-            let prefetchTimedText: PrefetchTrack[] = [];
+            // Prepare PREFETCH TTML payload to include in PLAYER_READY (do NOT post TTML_TEXT before ready)
+            let prefetchTimedText: PrefetchTrack | null = null;
             try {
-                const prefetchMap = getPrefetchMap();
-                if (prefetchMap.size > 0) {
-                    prefetchTimedText = Array.from(prefetchMap.values())
-                        .sort((a, b) => (b?.at || 0) - (a?.at || 0))
-                        .slice(0, 20);
-
-                    // Clear after snapshot so we don't resend on re-init
-                    prefetchMap.clear();
-                }
+                prefetchTimedText = consumePrefetchTrack();
             } catch (e) {
                 subFluentError("[pageHook] failed to prepare PREFETCH for PLAYER_READY", e);
             }
+            // If we have a prefetched TTML but no reliable meta yet, attach meta from the current timed-text track.
+            if (prefetchTimedText && prefetchTimedText.meta) {
+                const b = currentTrack?.bcp47 != null ? String(currentTrack.bcp47).trim().toLowerCase() : null;
+                const tt = currentTrack?.trackType != null ? String(currentTrack.trackType).trim().toLowerCase() : null;
+                const raw = currentTrack?.rawTrackType != null ? String(currentTrack.rawTrackType).trim().toLowerCase() : null;
 
+                if (b) prefetchTimedText.meta.bcp47 = b;
+                if (tt) prefetchTimedText.meta.trackType = tt;
+                if (raw) prefetchTimedText.meta.rawTrackType = raw;
+            }
+            
+            subFluentDebug(prefetchTimedText, playerFacade.getTimedTextTrack());
             post({
                 type: "PLAYER_READY",
                 movieId: playerFacade.getMovieId(),
@@ -587,11 +688,35 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
             return head.startsWith("<tt") || head.includes("<tt ") || head.includes("<tt>");
         };
 
-        const getLangFromTtml = (ttml: string): string | null => {
-            // <tt ... xml:lang="vi"> 또는 xml:lang='vi'
-            const m = ttml.match(/<tt\b[^>]*\bxml:lang\s*=\s*["']([^"']+)["']/i);
-            return m?.[1]?.toLowerCase() ?? null;
+        const readXhrResponseTextSafe = (xhr: XMLHttpRequest): string => {
+            try {
+                const rt = (xhr as any).responseType as string;
+                // responseText is only valid for "" or "text"
+                if (!rt || rt === "text") {
+                    return typeof (xhr as any).responseText === "string" ? (xhr as any).responseText : "";
+                }
+                if (rt === "arraybuffer") {
+                    const buf = (xhr as any).response;
+                    if (buf && buf instanceof ArrayBuffer) {
+                        try {
+                            return new TextDecoder("utf-8").decode(new Uint8Array(buf));
+                        } catch {
+                            // Fallback: best-effort latin1 style decode
+                            let s = "";
+                            const u8 = new Uint8Array(buf);
+                            for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+                            return s;
+                        }
+                    }
+                    return "";
+                }
+                // blob/document/json etc. are ignored here
+                return "";
+            } catch {
+                return "";
+            }
         };
+
 
         type HookSetting = {
             host: string;
@@ -654,83 +779,72 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
 
             const origSend = (window as any)[PAGE_NS].hooks.origXhrSend as typeof XMLHttpRequest.prototype.send;
             XMLHttpRequest.prototype.send = function (this: XMLHttpRequest, body?: Document | BodyInit | null) {
-                // Avoid attaching multiple load listeners if send wrapper is ever re-entered
-                if (!(this as any).__subfluent_loadAttached) {
+                // Only attach our load listener for timed-text candidate requests.
+                // This avoids touching unrelated Netflix endpoints (e.g., msl_v1 router) and reduces noise.
+                const url = String((this as any).__subfluent_url || "");
+                const shouldAttach = url.includes(".nflxvideo.net");
+
+                if (shouldAttach && !(this as any).__subfluent_loadAttached) {
                     (this as any).__subfluent_loadAttached = true;
 
                     this.addEventListener("load", () => {
                         try {
-                            const url = String((this as any).__subfluent_url || "");
-                            const ct = this.getResponseHeader("content-type") || "";
+                            let ct = "";
+                            try {
+                                ct = this.getResponseHeader("content-type") || "";
+                            } catch {
+                                ct = "";
+                            }
 
-                            // 2) TTML hook (timed text)
+                            // TTML hook (timed text)
                             if (isHookingUrl(url, hookingSettings.ttmlXhrHook)) {
-                                const isXml = ct.includes("text/xml") || ct.includes("application/xml");
-                                if (isXml) {
-                                    const maybeText = typeof (this as any).responseText === "string" ? (this as any).responseText : "";
-                                    const bcp47 = getLangFromTtml(maybeText)
-                                    const movieId = playerFacade?.getMovieId?.()?playerFacade.getMovieId?.():extractNumericId(location.pathname);
+                                const isXmlLike =
+                                    ct.includes("text/xml") || ct.includes("application/xml") || ct.includes("application/octet-stream");
+                                if (isXmlLike) {
+                                    const maybeText = readXhrResponseTextSafe(this as any);
                                     if (maybeText && looksLikeTtml(maybeText) && isWatch()) {
-                                        const m = maybeText.match(/nttm:textType\s*=\s*["']([^"']+)["']/i);
-                                        const nttmTextType = m?.[1]?.trim().toUpperCase() || "";
-
-                                        const normNttm = kindFromNttmTextType(nttmTextType);
-                                        const match = matchRequestedTimedText(bcp47, normNttm);
-
-                                        // If we have an active request context, only forward TTML that matches it.
-                                        // If no request context exists, forward anyway (best-effort).
+                                        // If we have no explicit requested list (and no pending waiter), treat it as PREFETCH.
+                                        // Prefetch may happen before playerFacade is ready, so store with empty meta/movieId.
                                         const req = getRequestedTimedText();
-                                        if (req.length > 0 && !match) return;
-
-                                        // Consume exactly the matched entry so we don't keep filtering forever.
-                                        // This also makes repeated TTML for the same track a no-op for filtering.
-                                        let consumed: TimedTextTrackMeta | null = null;
-                                       if (match) {
-                                            consumed = consumeRequestedTimedTextAtIndex(match.index);
-                                        }
-
-                                        const remaining = getRequestedTimedText();
-
-                                        // If we've consumed all requested entries, restore timedText to NONE to reduce further subtitle prefetch.
-                                        // Use a short defer to avoid racing with the current XHR callback / recent setTimedTextTrack calls.
-                                        if (match && remaining.length === 0) {
-                                            try {
-                                                setTimeout(() => {
-                                                    try {
-                                                        initializeTextTrack();
-                                                    } catch (e) {
-                                                        subFluentError("[pageHook] initializeTextTrack failed", e);
-                                                    }
-                                                }, 0);
-                                            } catch (e) {
-                                                subFluentError("[pageHook] schedule initializeTextTrack failed", e);
-                                            }
-                                        }
-                                        
-                                        const outgoingMeta = consumed ?? (match ? match.meta : null);
-
-                                        // If this TTML did NOT come from our explicit request context,
-                                        // treat it as prefetch (first-load) and cache it instead of posting to content.
-                                        // Rationale: on first load Netflix may fetch previous subtitle automatically,
-                                        // and we won't have a requestedTimedText context to consume from.
-                                        const reqNow = getRequestedTimedText();
-                                        const isRequestedFlow = reqNow.length > 0 || !!outgoingMeta;
+                                        const isRequestedFlow = (Array.isArray(req) && req.length > 0) || hasPendingTtmlWaiter();
 
                                         if (!isRequestedFlow) {
-                                            const prefetchMeta = synthesizeMetaFromTtml(bcp47, normNttm);
-                                            const key = makeTrackKey(prefetchMeta);
-                                            const prefetchMap = getPrefetchMap();
-                                            prefetchMap.set(key, { key, meta: prefetchMeta, ttml: maybeText, at: Date.now() });
+                                            try {
+                                                const prefetchMeta: TimedTextTrackMeta = { bcp47: null, trackType: null, rawTrackType: null };
+                                                const key = `prefetch:${Date.now()}`;
+                                                setPrefetchTrack({ key, meta: prefetchMeta, ttml: maybeText, at: Date.now() });
+                                            } catch (e) {
+                                                subFluentError("[pageHook] failed to cache PREFETCH TTML", e);
+                                            }
                                             return;
                                         }
 
-                                        // Requested (or matched) TTML: forward to content
+                                        // Requested TTML: derive meta from current live player timedText track.
+                                        let outgoingMeta: TimedTextTrackMeta | null = null;
+                                        let movieId: string | null = null;
+                                        try {
+                                            movieId = playerFacade?.getMovieId?.()
+                                                ? playerFacade.getMovieId?.()
+                                                : extractNumericId(location.pathname);
+                                        } catch {
+                                            movieId = extractNumericId(location.pathname);
+                                        }
+                                        try {
+                                            const live = playerFacade?.getTimedTextTrack?.();
+                                            outgoingMeta = live ? toTrackMeta(live) : null;
+                                        } catch {
+                                            outgoingMeta = null;
+                                        }
+
                                         post({
                                             type: "TTML_TEXT",
                                             ttml: maybeText,
                                             movieId: movieId,
                                             trackMeta: outgoingMeta,
                                         });
+
+                                        // Notify the sequencer that a TTML has been forwarded.
+                                        notifyNextTtmlArrived();
                                         return;
                                     }
                                 }
