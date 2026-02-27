@@ -4,7 +4,6 @@
 
 import { type TtmlSubtitle } from "../../shared/ttmlParser";
 import type { TimedTextTrack, AudioTrack } from "../../shared/protocol";
-import { subFluentDebug } from "../../shared/util";
 
 // Subtitles are stored by a normalized track-meta key (not just BCP-47).
 // Reason: same bcp47 can exist as CC vs SUB, Assistive vs Primary, etc.
@@ -218,7 +217,6 @@ export class ContentState {
     if (!key) return;
 
     const stored: StoredTimedText = { key, meta, subtitle };
-    subFluentDebug("[contentState] stored key:", key, meta);
     bucket.set(key, stored);
 
     // "ready" heuristic: at least 2 distinct entries cached for this movieId.

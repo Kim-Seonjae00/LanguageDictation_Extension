@@ -1043,7 +1043,7 @@ function ensureSettingsOverlay() {
     applyBtn.style.color = "#fff";
     applyBtn.style.fontSize = "14px"
     applyBtn.style.cursor = "pointer";
-    applyBtn.addEventListener("click", async (e) => {
+    applyBtn.addEventListener("click", async () => {
         // Apply dictation ON/OFF (즉시 반영)
         toggleDictationMode(sfSettingDictationEnabled);
         
@@ -1099,7 +1099,6 @@ function ensureSettingsOverlay() {
             const movieId = contentState.movieId;
             if(!movieId) return;
             const bucket = contentState.getBucket(movieId);
-            let appliedCached = false;
 
             if (learningChanged) {
                 const learningMeta: TimedTextTrackMeta = {
@@ -1145,7 +1144,6 @@ function ensureSettingsOverlay() {
                             const merged = mergeCuesByTime(cues as CueLike[]);
                             sfLatestMovieId = movieId;
                             sfLatestNativeMerged = merged;
-                            appliedCached = true;
                         } 
                     } catch (e) {
                         subFluentError("[SubFluent] failed to apply cached translate from bucket:", e);
@@ -1353,7 +1351,7 @@ function escapeHtml(s: string) {
 }
 
 
-function startCueLogging(movieId: string, subtitleMap: Map<string, CueData>) {
+function startCueLogging(subtitleMap: Map<string, CueData>) {
     // stop previous loop
     stopCueLogging?.();
 
@@ -1669,7 +1667,7 @@ function generateWindow(movieId: string, learningCuesRaw: CueLike[], nativeCuesR
         }
     }
     const mapToUse = sfDictationMode ? collapseCueMapToSentenceMap(subtitleCueMap, { gapSec: 0.8 }) : subtitleCueMap;
-    callback(movieId, mapToUse);
+    callback(mapToUse);
 }
 
 // Stop logging when movie changes or page unloads

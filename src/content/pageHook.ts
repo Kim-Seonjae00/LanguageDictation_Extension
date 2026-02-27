@@ -1,5 +1,5 @@
 // src/content/pageHook.ts
-import { setSubFluentLogLevel, subFluentDebug, subFluentError, subFluentInfo } from "../shared/util";
+import { setSubFluentLogLevel, subFluentDebug, subFluentError } from "../shared/util";
 import type { PlayerFacade } from "../shared/player";
 import type { TimedTextTrackMeta } from "./state/contentState";
 
@@ -27,19 +27,10 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
     let playerFacade: any = null; // raw Netflix player (live object)
 
     // --- TimedText helpers and request cache ---
-    type TimedTextKind = "CC" | "SUBS" | "FORCED" | "NONE" | "UNKNOWN";
-
+    
     const norm = (s: string | null | undefined) => String(s || "").toLowerCase();
     const primary = (s: string) => norm(s).split("-")[0];
 
-    const kindFromNttmTextType = (nttmTextTypeRaw: string): TimedTextKind => {
-        const t = String(nttmTextTypeRaw || "").trim().toUpperCase();
-        if (!t) return "UNKNOWN";
-        if (t.includes("FORCED")) return "FORCED";
-        if (t.startsWith("CC") || t.includes("CAPTION")) return "CC";
-        if (t.startsWith("SUB") || t.includes("SUBTITLE")) return "SUBS";
-        return "UNKNOWN";
-    };
 
     const toTrackMeta = (t: any): TimedTextTrackMeta => {
         return {
@@ -70,26 +61,6 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
         return t;
     };
 
-    // Best-effort synthesize meta when we didn't initiate a request.
-    // NOTE: TTML may miss xml:lang; in that case bcp47 can be null.
-    const synthesizeMetaFromTtml = (bcp47: string | null, kind: TimedTextKind): TimedTextTrackMeta => {
-        const b = bcp47 != null ? String(bcp47).trim().toLowerCase() : null;
-
-        // Minimal, stable-ish defaults from observed kind
-        // (Used only for prefetch cache keys; requested flows use real player track meta.)
-        if (kind === "CC") {
-            return { bcp47: b, trackType: "assistive", rawTrackType: "closedcaptions" };
-        }
-        if (kind === "SUBS") {
-            return { bcp47: b, trackType: "primary", rawTrackType: "subtitles" };
-        }
-        if (kind === "FORCED") {
-            return { bcp47: b, trackType: "primary", rawTrackType: "forcednarrative" };
-        }
-
-        return { bcp47: b, trackType: null, rawTrackType: null };
-    };
-
     const setRequestedTimedText = (items: TimedTextTrackMeta[]) => {
         g[PAGE_NS].hooks.requestedTimedText = items;
         g[PAGE_NS].hooks.requestedTimedTextAt = Date.now();
@@ -100,62 +71,62 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
         return Array.isArray(items) ? items : [];
     };
 
-    const consumeRequestedTimedTextAtIndex = (index: number): TimedTextTrackMeta | null => {
-        const items = getRequestedTimedText();
-        if (!Array.isArray(items) || items.length === 0) return null;
-        if (index < 0 || index >= items.length) return null;
+    // const consumeRequestedTimedTextAtIndex = (index: number): TimedTextTrackMeta | null => {
+    //     const items = getRequestedTimedText();
+    //     if (!Array.isArray(items) || items.length === 0) return null;
+    //     if (index < 0 || index >= items.length) return null;
 
-        const removed = items.splice(index, 1)[0] || null;
-        // Persist the mutated array back (keep lifecycle consistent)
-        setRequestedTimedText(items);
-        return removed;
-    };
+    //     const removed = items.splice(index, 1)[0] || null;
+    //     // Persist the mutated array back (keep lifecycle consistent)
+    //     setRequestedTimedText(items);
+    //     return removed;
+    // };
 
-    const matchRequestedTimedText = (
-        bcp47: string | null,
-        kind: TimedTextKind
-    ): { meta: TimedTextTrackMeta; index: number } | null => {
-        const req = getRequestedTimedText();
-        if (req.length === 0) return null;
+    // const matchRequestedTimedText = (
+    //     bcp47: string | null,
+    //     kind: TimedTextKind
+    // ): { meta: TimedTextTrackMeta; index: number } | null => {
+    //     const req = getRequestedTimedText();
+    //     if (req.length === 0) return null;
 
-        const b = bcp47 ? norm(bcp47) : "";
-        const pb = b ? primary(b) : "";
+    //     const b = bcp47 ? norm(bcp47) : "";
+    //     const pb = b ? primary(b) : "";
 
-        // Map observed kind -> expected rawTrackType token (best-effort)
-        const wantRawToken = kind === "CC" ? "caption" : kind === "SUBS" ? "sub" : kind === "FORCED" ? "forced" : "";
+    //     // Map observed kind -> expected rawTrackType token (best-effort)
+    //     const wantRawToken = kind === "CC" ? "caption" : kind === "SUBS" ? "sub" : kind === "FORCED" ? "forced" : "";
 
-        const findIndex = (pred: (r: TimedTextTrackMeta) => boolean): number => {
-            for (let i = 0; i < req.length; i++) {
-                if (pred(req[i])) return i;
-            }
-            return -1;
-        };
+    //     const findIndex = (pred: (r: TimedTextTrackMeta) => boolean): number => {
+    //         for (let i = 0; i < req.length; i++) {
+    //             if (pred(req[i])) return i;
+    //         }
+    //         return -1;
+    //     };
 
-        const rawHas = (r: TimedTextTrackMeta) => {
-            const raw = norm(r?.rawTrackType);
-            if (!wantRawToken) return true; // unknown kind: don't filter by raw
-            return raw.includes(wantRawToken);
-        };
+    //     const rawHas = (r: TimedTextTrackMeta) => {
+    //         const raw = norm(r?.rawTrackType);
+    //         if (!wantRawToken) return true; // unknown kind: don't filter by raw
+    //         return raw.includes(wantRawToken);
+    //     };
 
-        // priority:
-        // 1) exact bcp47 + raw-kind match
-        // 2) primary(bcp47) + raw-kind match
-        // 3) exact bcp47
-        // 4) primary(bcp47)
-        let idx = findIndex((r) => norm(r?.bcp47) === b && rawHas(r));
-        if (idx >= 0) return { meta: req[idx], index: idx };
+    //     // priority:
+    //     // 1) exact bcp47 + raw-kind match
+    //     // 2) primary(bcp47) + raw-kind match
+    //     // 3) exact bcp47
+    //     // 4) primary(bcp47)
+    //     let idx = findIndex((r) => norm(r?.bcp47) === b && rawHas(r));
+    //     if (idx >= 0) return { meta: req[idx], index: idx };
 
-        idx = findIndex((r) => primary(norm(r?.bcp47)) === pb && rawHas(r));
-        if (idx >= 0) return { meta: req[idx], index: idx };
+    //     idx = findIndex((r) => primary(norm(r?.bcp47)) === pb && rawHas(r));
+    //     if (idx >= 0) return { meta: req[idx], index: idx };
 
-        idx = findIndex((r) => norm(r?.bcp47) === b);
-        if (idx >= 0) return { meta: req[idx], index: idx };
+    //     idx = findIndex((r) => norm(r?.bcp47) === b);
+    //     if (idx >= 0) return { meta: req[idx], index: idx };
 
-        idx = findIndex((r) => primary(norm(r?.bcp47)) === pb);
-        if (idx >= 0) return { meta: req[idx], index: idx };
+    //     idx = findIndex((r) => primary(norm(r?.bcp47)) === pb);
+    //     if (idx >= 0) return { meta: req[idx], index: idx };
 
-        return null;
-    };
+    //     return null;
+    // };
 
     // --- TTML sequencing helpers ---
     // We want to setTimedTextTrack() one-by-one and only move to the next
@@ -424,68 +395,12 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
                         }
                     } finally {
                         setRequestedTimedText([]);
+                        initializeTextTrack();
                     }
                 })();
 
                 return;
             }
-
-            // -----------------------------
-            // Legacy protocol fallback
-            // -----------------------------
-            const learning = norm(d.learning);
-            const translate = norm(d.translate);
-
-            const langs = [learning, translate].filter(Boolean);
-            if (langs.length === 0) {
-                return;
-            }
-
-            // Build a plain-meta snapshot of the tracks we are about to request.
-            // We will use this later in the TTML XHR hook to classify TTML_TEXT without relying on getTimedTextTrack() timing.
-            try {
-                const metas: TimedTextTrackMeta[] = [];
-                const learningTrack = learning ? findByBcp47(learning, list) : null;
-                const translateTrack = translate ? findByBcp47(translate, list) : null;
-
-                if (learningTrack) metas.push(toTrackMeta(learningTrack));
-                if (translateTrack) metas.push(toTrackMeta(translateTrack));
-
-                // Fallback: if we couldn't resolve either, keep empty.
-                setRequestedTimedText(metas);
-            } catch (e) {
-                subFluentError("[pageHook] failed to build requested timedText metas", e);
-            }
-
-            (async () => {
-                try {
-                    const seen = new Set<string>();
-                    let lastTrackId = "";
-                    for (const b of langs) {
-                        const track = findByBcp47(b, list);
-                        if (!track) continue;
-
-                        const tid = String(track?.trackId || "");
-                        if (tid && seen.has(tid)) continue;
-                        if (tid) seen.add(tid);
-
-                        try {
-                            await Promise.resolve(playerFacade.setTimedTextTrack(track));
-
-                            if (tid && tid === lastTrackId) {
-                                continue;
-                            }
-                            lastTrackId = tid;
-
-                            await waitForNextTtmlForward(10_000);
-                        } catch (e) {
-                            subFluentError("[pageHook] setTimedTextTrack/TTML sequencing failed:", { bcp47: b, trackId: track?.trackId }, e);
-                        }
-                    }
-                } finally {
-                    setRequestedTimedText([]);
-                }
-            })();
         }
         if (d.type === "PLAYER_SetAudio") {
             if (!playerFacade?.setAudioTrack) return;
@@ -539,8 +454,7 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
         }
 
         try {
-           // playerFacade.setTimedTextTrack(noneTrack);
-           subFluentDebug("pass initialize");
+           playerFacade.setTimedTextTrack(noneTrack);
         } catch (e) {
             subFluentError("[initializeTextTrack] setTimedTextTrack(NONE) failed:", e);
         }
