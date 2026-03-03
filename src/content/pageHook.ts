@@ -1,8 +1,11 @@
 // src/content/pageHook.ts
-import {setSubFluentLogLevel, subFluentDebug, subFluentError } from "../shared/util";
-setSubFluentLogLevel("DEBUG"); // 개발 중
-// setSubFluentLogLevel("INFO"); // 평소
-// setSubFluentLogLevel("WARN"); // 배포
+import { setSubFluentLogLevel, subFluentDebug, subFluentError } from "../shared/util";
+import type { PlayerFacade } from "../shared/player";
+import type { TimedTextTrackMeta } from "./state/contentState";
+
+// setSubFluentLogLevel("DEBUG"); // 개발 중
+// // setSubFluentLogLevel("INFO"); // 평소
+setSubFluentLogLevel("WARN"); // 배포
 (function () {
     // ===== 0) 중복 주입 방지 (page world 전역 플래그) =====
     const PAGE_NS = "__SUBFLUENT__";
@@ -20,84 +23,112 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
     g[PAGE_NS].hooks ??= {};
 
     const SRC = "SubFluent";
-    const learningLang = "en";
-    const nativeLang = "ko";
-    const TEST_LANG = [learningLang, nativeLang];
+    const isWatch = () => location.pathname.startsWith("/watch/");
     let playerFacade: any = null; // raw Netflix player (live object)
 
-    type PlayerFacade = {
-        // --- core / ids ---
-        getMovieId: () => any;
-        getXid?: () => any;
-        getPlaybackContextId?: () => any;
+    // --- TimedText helpers and request cache ---
+    
+    const norm = (s: string | null | undefined) => String(s || "").toLowerCase();
+    const primary = (s: string) => norm(s).split("-")[0];
 
-        // --- readiness / state ---
-        getReady: () => boolean;
-        isReady?: () => boolean;
-        getBusy?: () => any;
 
-        // --- playback basic ---
-        getCurrentTime?: () => number;
-        getBufferedTime?: () => number;
-        getDuration?: () => number;
-        getPaused?: () => boolean;
-        getPlaying?: () => boolean;
-        isPaused?: () => boolean;
-        isPlaying?: () => boolean;
-        getEnded?: () => boolean;
-        isEnded?: () => boolean;
-        getMuted?: () => boolean;
-        isMuted?: () => boolean;
-        getVolume?: () => number;
-        getPlaybackRate?: () => number;
-
-        // --- playback navigation / segments / tricks ---
-        getSegmentTime?: () => any;
-        getTimeCodes?: () => any;
-        goToNextSegment?: (h: any, k: any) => any;
-        getTrickPlayFrame?: (h: any) => any;
-
-        // --- element / sizing ---
-        getElement?: () => any;
-        getVideoSize?: () => any;
-        getCropAspectRatio?: () => any;
-
-        // --- diagnostics / logs / errors ---
-        getError?: () => any;
-        induceError?: (h: any) => any;
-        getDiagnostics?: () => any;
-        getAdditionalLogInfo?: () => any;
-
-        // --- audio ---
-        getAudioTrack?: () => any;
-        getAudioTrackList?: () => any;
-        getMaxRecommendedAudioIndex?: () => any;
-
-        // --- text / timed text ---
-        getTextTrack?: () => any;
-        getTextTrackList?: (h: any) => any;
-
-        getTimedTextTrack: () => any;
-        getTimedTextTrackList: (h?: any) => any;
-        setTimedTextTrack: (track: any) => Promise<any>;
-
-        getTimedTextSettings?: () => any;
-        getTimedTextVisibility?: () => any;
-
-        getMaxRecommendedTextIndex?: (h: any) => any;
-        getMaxRecommendedTimedTextIndex?: (h: any) => any;
-
-        // --- managers ---
-        getAdManager?: () => any;
-        getLivePlaybackManager?: () => any;
-        getPlaygraphManager?: () => any;
-
-        // --- network / congestion ---
-        getCongestionInfo?: (h: any) => any;
-
-        // --- internal (you logged iVa / iVa property) ---
-        iVa?: any;
+    const toTrackMeta = (t: any): TimedTextTrackMeta => {
+        return {
+            bcp47: t?.bcp47 != null ? String(t.bcp47).trim().toLowerCase() : null,
+            trackType: t?.trackType != null ? String(t.trackType).trim().toLowerCase() : null,
+            rawTrackType: t?.rawTrackType != null ? String(t.rawTrackType).trim().toLowerCase() : null,
+        };
     };
+
+    // Prefetch TTML cache (first-load / non-requested TTML)
+    // We assume prefetch is at most one meaningful item per first-load.
+    type PrefetchTrack = {
+        key: string;
+        meta: TimedTextTrackMeta;
+        ttml: string;
+        at: number;
+    };
+
+    const setPrefetchTrack = (t: PrefetchTrack | null) => {
+        const hooks = g[PAGE_NS].hooks;
+        hooks.prefetchTimedText = t;
+    };
+
+    const consumePrefetchTrack = (): PrefetchTrack | null => {
+        const hooks = g[PAGE_NS].hooks;
+        const t = (hooks.prefetchTimedText as PrefetchTrack | null) ?? null;
+        hooks.prefetchTimedText = null;
+        return t;
+    };
+
+    const setRequestedTimedText = (items: TimedTextTrackMeta[]) => {
+        g[PAGE_NS].hooks.requestedTimedText = items;
+        g[PAGE_NS].hooks.requestedTimedTextAt = Date.now();
+    };
+
+    const getRequestedTimedText = (): TimedTextTrackMeta[] => {
+        const items = g[PAGE_NS]?.hooks?.requestedTimedText;
+        return Array.isArray(items) ? items : [];
+    };
+
+    // --- TTML sequencing helpers ---
+    // We want to setTimedTextTrack() one-by-one and only move to the next
+    // after the XHR hook has forwarded TTML_TEXT to the content script.
+    type TtmlWaiter = {
+        resolve: () => void;
+        reject: (e: any) => void;
+        timer: any;
+    };
+
+    const getTtmlWaiters = (): TtmlWaiter[] => {
+        const hooks = g[PAGE_NS].hooks;
+        if (!hooks.ttmlWaiters) hooks.ttmlWaiters = [];
+        return hooks.ttmlWaiters as TtmlWaiter[];
+    };
+
+    const hasPendingTtmlWaiter = (): boolean => {
+        try {
+            const q = getTtmlWaiters();
+            return Array.isArray(q) && q.length > 0;
+        } catch {
+            return false;
+        }
+    };
+
+    const notifyNextTtmlArrived = () => {
+        const q = getTtmlWaiters();
+        const w = q.shift();
+        if (!w) return;
+        try {
+            clearTimeout(w.timer);
+        } catch {
+            // ignore
+        }
+        w.resolve();
+    };
+
+    const waitForNextTtmlForward = (timeoutMs = 8000): Promise<void> => {
+        return new Promise<void>((resolve, reject) => {
+            const q = getTtmlWaiters();
+            const w: TtmlWaiter = {
+                resolve,
+                reject,
+                timer: setTimeout(() => {
+                    try {
+                        // remove self if still queued
+                        const idx = q.indexOf(w);
+                        if (idx >= 0) q.splice(idx, 1);
+                    } catch {
+                        // ignore
+                    }
+                    reject(new Error("timeout waiting for TTML_TEXT"));
+                }, timeoutMs),
+            };
+            q.push(w);
+        });
+    };
+    // --- TTML sequencing helpers end ---
+
 
     function createPlayerFacade(p: any): PlayerFacade {
         return {
@@ -113,6 +144,7 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
 
             // --- playback basic ---
             getCurrentTime: () => p?.getCurrentTime?.(),
+            seek: (time: any) => p?.seek?.(time),
             getBufferedTime: () => p?.getBufferedTime?.(),
             getDuration: () => p?.getDuration?.(),
             getPaused: () => p?.getPaused?.(),
@@ -123,7 +155,6 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
             isEnded: () => p?.isEnded?.(),
             getMuted: () => p?.getMuted?.(),
             isMuted: () => p?.isMuted?.(),
-            getVolume: () => p?.getVolume?.(),
             getPlaybackRate: () => p?.getPlaybackRate?.(),
 
             // --- playback navigation / segments / tricks ---
@@ -145,12 +176,13 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
 
             // --- audio ---
             getAudioTrack: () => p?.getAudioTrack?.(),
-            getAudioTrackList: () => p?.getAudioTrackList?.(),
-            getMaxRecommendedAudioIndex: () => p?.getMaxRecommendedAudioIndex?.(),
+            getAudioTrackList: (h: any) => p?.getAudioTrackList?.(h),
+            setAudioTrack: (track: any) => p?.setAudioTrack?.(track),
 
             // --- text / timed text ---
             getTextTrack: () => p?.getTextTrack?.(),
             getTextTrackList: (h?: any) => p?.getTextTrackList?.(h),
+            setTextTrack: (track: any) => p?.setTextTrack?.(track),
 
             getTimedTextTrack: () => p?.getTimedTextTrack?.(),
             getTimedTextTrackList: (h?: any) => p?.getTimedTextTrackList?.(h),
@@ -174,6 +206,203 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
             iVa: p?.iVa,
         };
     }
+    
+    const post = (data: any) => {
+        window.postMessage({ source: SRC, ...data }, "*");
+    };
+
+    window.addEventListener("message", (event) => {
+        const d = event.data;
+        if (!d || d.source !== SRC) return;
+        if (d.type === "PLAYER_SEEK") playerFacade?.seek(d.start?d.start:playerFacade.getCurrentTime() - 250);
+
+        // removed duplicate norm/primary declarations; now using top-level helpers
+
+        const desiredBcp47 = norm(d.audioBcp47);
+        const desiredTrackId = String(d.trackId || "");
+
+        const findByTrackId = (id: string, list:any[]): any | null => {
+            if (!id) return null;
+            return list.find((t) => String(t?.trackId || "") === id) || null;
+        };
+
+        const findByBcp47 = (b: string, list:any[]): any | null => {
+            if (!b) return null;
+            const pb = primary(b);
+            return (
+                list.find((t) => norm(t?.bcp47) === b) ||
+                list.find((t) => primary(norm(t?.bcp47)) === pb) ||
+                null
+            );
+        };
+        if (d.type === "SF_REQUEST_TimedText") {
+            if (!playerFacade?.setTimedTextTrack) return;
+            // NOTE: do NOT trust track objects coming from postMessage (structured clone breaks them).
+            // Always resolve real track objects from the live player list in page world.
+            const list = playerFacade?.getTimedTextTrackList?.() as any[] | undefined;
+            if (!Array.isArray(list) || list.length === 0) {
+                return;
+            }
+
+            type ReqItem = {
+                subType: "learning" | "translate";
+                key?: string;
+                meta?: TimedTextTrackMeta;
+            };
+
+            const hasItems = Array.isArray(d.items) && d.items.length > 0;
+
+            const resolveTimedTextTrackByMeta = (m: any, tracks: any[]): any | null => {
+                if (!m) return null;
+                const b = norm(m?.bcp47);
+                if (!b) return null;
+                const pb = primary(b);
+                const wantTrackType = m?.trackType != null ? String(m.trackType) : "";
+                const wantRaw = m?.rawTrackType != null ? String(m.rawTrackType) : "";
+
+                const eqTrackType = (t: any) => (wantTrackType ? String(t?.trackType || "") === wantTrackType : true);
+                const eqRaw = (t: any) => (wantRaw ? String(t?.rawTrackType || "") === wantRaw : true);
+
+                // priority:
+                // 1) exact bcp47 + raw + trackType
+                // 2) primary(bcp47) + raw + trackType
+                // 3) exact bcp47 + raw
+                // 4) primary(bcp47) + raw
+                // 5) exact bcp47
+                // 6) primary(bcp47)
+                const find = (pred: (t: any) => boolean) => tracks.find(pred) || null;
+
+                return (
+                    find((t) => norm(t?.bcp47) === b && eqRaw(t) && eqTrackType(t)) ||
+                    find((t) => primary(norm(t?.bcp47)) === pb && eqRaw(t) && eqTrackType(t)) ||
+                    find((t) => norm(t?.bcp47) === b && eqRaw(t)) ||
+                    find((t) => primary(norm(t?.bcp47)) === pb && eqRaw(t)) ||
+                    find((t) => norm(t?.bcp47) === b) ||
+                    find((t) => primary(norm(t?.bcp47)) === pb) ||
+                    null
+                );
+            };
+
+            if (hasItems) {
+                const items = (d.items as ReqItem[]).filter((it) => it && it.meta);
+                // Build a plain-meta snapshot of the tracks we are about to request.
+                // We will use this later in the TTML XHR hook to classify TTML_TEXT without relying on getTimedTextTrack() timing.
+                try {
+                    const metas: TimedTextTrackMeta[] = [];
+
+                    for (const it of items) {
+                        const t = resolveTimedTextTrackByMeta(it.meta, list);
+                        if (!t) continue;
+                        metas.push(toTrackMeta(t));
+                    }
+
+                    // Persist requested context (can be empty)
+                    setRequestedTimedText(metas);
+                } catch (e) {
+                    subFluentError("[pageHook] failed to build requested timedText metas", e);
+                }
+
+                (async () => {
+                    try {
+                        const seen = new Set<string>();
+                        let lastTrackId = "";
+                        for (const it of items) {
+                            const track = resolveTimedTextTrackByMeta(it.meta, list);
+                            if (!track) continue;
+
+                            const tid = String(track?.trackId || "");
+                            // If multiple items map to the same underlying track, Netflix may NOT refetch TTML.
+                            // In that case waiting for TTML_TEXT would timeout, so we dedupe by trackId.
+                            if (tid && seen.has(tid)) {
+                                continue;
+                            }
+                            if (tid) seen.add(tid);
+
+                            try {
+                                await Promise.resolve(playerFacade.setTimedTextTrack(track));
+
+                                // If track didn't actually change, don't wait for a new TTML network fetch.
+                                if (tid && tid === lastTrackId) {
+                                    continue;
+                                }
+                                lastTrackId = tid;
+
+                                await waitForNextTtmlForward(10_000);
+                            } catch (e) {
+                                subFluentError(
+                                    "[pageHook] setTimedTextTrack/TTML sequencing failed (items):",
+                                    { subType: it.subType, bcp47: it?.meta?.bcp47, trackId: track?.trackId },
+                                    e
+                                );
+                            }
+                        }
+                    } finally {
+                        setRequestedTimedText([]);
+                        initializeTextTrack();
+                    }
+                })();
+
+                return;
+            }
+        }
+        if (d.type === "PLAYER_SetAudio") {
+            if (!playerFacade?.setAudioTrack) return;
+
+            // priority: explicit trackId > bcp47
+            const list = playerFacade?.getAudioTrackList()
+            const track = findByTrackId(desiredTrackId, list) || findByBcp47(desiredBcp47, list);
+            if (!track) return;
+
+            try {
+                // Normalize promise/void return
+                Promise.resolve(playerFacade.setAudioTrack(track))
+                    .catch((e) => {
+                        subFluentError("[pageHook] setAudioTrack failed:", { bcp47: desiredBcp47, trackId: desiredTrackId }, e);
+                    });
+                initializeTextTrack();
+            } catch (e) {
+                subFluentError("[pageHook] setAudioTrack threw:", { bcp47: desiredBcp47, trackId: desiredTrackId }, e);
+            }
+        }
+    });
+
+    const isNoneTimedTextTrack = (t: any): boolean => {
+        if (!t) return false;
+
+        // Most reliable flags when present
+        if (t?.isNoneTrack === true) return true;
+        if (t?.noneTrack === true) return true;
+
+        const id = String(t?.trackId || "");
+        // Some titles include explicit NONE token
+        if (id.includes("NONE") || id.includes(";NONE;")) return true;
+
+        // displayName varies by locale: 끄기 / Off / None / 자막 끄기
+        const name = String(t?.displayName || "");
+        if (/(끄기|off|none)/i.test(name)) return true;
+
+        return false;
+    };
+
+    const initializeTextTrack = () => {
+        // Guard: playerFacade must exist
+        if (!playerFacade?.setTimedTextTrack) return;
+
+        const trackList = playerFacade?.getTimedTextTrackList();
+        if (!Array.isArray(trackList) || trackList.length === 0) return;
+
+        const noneTrack = trackList.find(isNoneTimedTextTrack) || null;
+        if (!noneTrack) {
+            return;
+        }
+
+        try {
+           playerFacade.setTimedTextTrack(noneTrack);
+        } catch (e) {
+            subFluentError("[initializeTextTrack] setTimedTextTrack(NONE) failed:", e);
+        }
+    };
+
     // pageHook.ts (page world)
     // ===== 1) 공용 폴링 유틸 =====
     function pollUntil<T>(getter: () => T | null | undefined | false, label: string): Promise<T> {
@@ -200,69 +429,182 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
         });
     }
 
-    // ===== 3) 메인: appContext -> videoPlayer -> sessionId -> player =====
-    // NOTE: 회차 전환 등으로 player를 다시 잡아야 할 때, 연속 호출로 중복 폴링/중복 콜백이 발생할 수 있음.
-    // page world 전역 플래그로 "재초기화 진행 중"이면 스킵한다.
-    async function initPlayerChain(callback: () => void) {
+    async function initPlayerChain() {
         const ns = (window as any)[PAGE_NS];
         ns.hooks ??= {};
-
-        // 중복 재초기화 방지 (fire-and-forget 재호출 대비)
+        
         if (ns.hooks.initPlayerChainInFlight) {
-            subFluentDebug("initPlayerChain already in-flight. skip.");
             return null;
         }
-
+        
         ns.hooks.initPlayerChainInFlight = true;
         ns.hooks.initPlayerChainInFlightAt = Date.now();
-
+        
         try {
-            // A) appContext
             const appContext = await pollUntil<any>(() => {
                 const netflix = (window as any).netflix;
                 return netflix?.appContext;
             }, "appContext");
-
-            // B) videoPlayer (appContext 있어도 videoPlayer가 늦게 생길 수 있음)
+            
             const videoPlayer = await pollUntil<any>(() => {
                 return appContext?.state?.playerApp?.getAPI?.()?.videoPlayer;
             }, "videoPlayer");
-
-            // C) sessionId (재생 세션 생길 때까지)
+            
             const sessionId = await pollUntil<string>(() => {
                 return videoPlayer?.getAllPlayerSessionIds?.()?.[0];
             }, "sessionId");
-
-            // D) player (sessionId로 player 인스턴스가 나올 때까지)
+            
             const player = await pollUntil<any>(() => {
                 return videoPlayer?.getVideoPlayerBySessionId?.(sessionId);
             }, "player");
+            
+            const trackList = await pollUntil<any[]>(() => {
+                const list = player?.getTimedTextTrackList?.();
+                return Array.isArray(list) && list.length > 0 ? list : null;
+            }, "trackList");
 
+            const audioList = await pollUntil<any[]>(() => {
+                const list = player?.getAudioTrackList?.();
+                return Array.isArray(list) && list.length > 0 ? list : null;
+            }, "audioList");
+            
             playerFacade = createPlayerFacade(player);
-            callback();
+            const currentTrack = playerFacade.getTimedTextTrack?.();
+            const currentAudio = playerFacade.getAudioTrack?.();
+
+            // Initialize to NONE(Off/끄기) once playerFacade is ready
+            initializeTextTrack();
+            // Prepare PREFETCH TTML payload to include in PLAYER_READY (do NOT post TTML_TEXT before ready)
+            // Most-recent-first so content can optionally apply latest cached subtitles first.
+            // Prepare PREFETCH TTML payload to include in PLAYER_READY (do NOT post TTML_TEXT before ready)
+            let prefetchTimedText: PrefetchTrack | null = null;
+            try {
+                prefetchTimedText = consumePrefetchTrack();
+            } catch (e) {
+                subFluentError("[pageHook] failed to prepare PREFETCH for PLAYER_READY", e);
+            }
+            // If we have a prefetched TTML but no reliable meta yet, attach meta from the current timed-text track.
+            if (prefetchTimedText && prefetchTimedText.meta) {
+                const b = currentTrack?.bcp47 != null ? String(currentTrack.bcp47).trim().toLowerCase() : null;
+                const tt = currentTrack?.trackType != null ? String(currentTrack.trackType).trim().toLowerCase() : null;
+                const raw = currentTrack?.rawTrackType != null ? String(currentTrack.rawTrackType).trim().toLowerCase() : null;
+
+                if (b) prefetchTimedText.meta.bcp47 = b;
+                if (tt) prefetchTimedText.meta.trackType = tt;
+                if (raw) prefetchTimedText.meta.rawTrackType = raw;
+            }
+            
+            post({
+                type: "PLAYER_READY",
+                movieId: playerFacade.getMovieId(),
+                currentTrack: currentTrack,
+                currentAudio: currentAudio,
+                trackList: trackList,
+                audioList: audioList || [],
+                prefetchTimedText,
+            });
+            
+            // ---- start monitoring (singleton) ----
+if (!ns.hooks.monitoringTimer) {
+    ns.hooks.lastReinitAt ??= 0;
+    // Track movieId changes (next-episode often swaps movieId without fully destroying the player)
+    ns.hooks.lastMovieId ??= null;
+    ns.hooks.monitoringTimer = setInterval(() => {
+        try {
+            if (!playerFacade) return;
+
+            // Detect movieId changes even when player stays "ready"
+            let curMovieId: string | null = null;
+            try {
+                curMovieId = playerFacade?.getMovieId?.() != null ? String(playerFacade.getMovieId?.()) : null;
+            } catch {
+                curMovieId = null;
+            }
+
+            const prevMovieId = ns.hooks.lastMovieId != null ? String(ns.hooks.lastMovieId) : null;
+            if (curMovieId && curMovieId !== prevMovieId) {
+                const now = Date.now();
+                if (now - ns.hooks.lastReinitAt >= 1500) {
+                    ns.hooks.lastReinitAt = now;
+                    ns.hooks.lastMovieId = curMovieId;
+                    initPlayerChain();
+                    return;
+                }
+            }
+            // Keep lastMovieId updated once we can read it
+            if (curMovieId && curMovieId !== prevMovieId) {
+                ns.hooks.lastMovieId = curMovieId;
+            } else if (curMovieId && !prevMovieId) {
+                ns.hooks.lastMovieId = curMovieId;
+            }
+
+            const notReady = playerFacade.getReady?.() === false;
+
+            // 쿨다운: 너무 자주 재init 방지
+            if (notReady) {
+                const now = Date.now();
+                if (now - ns.hooks.lastReinitAt < 1500) return;
+                ns.hooks.lastReinitAt = now;
+                try {
+                    const mid = playerFacade?.getMovieId?.();
+                    if (mid != null) ns.hooks.lastMovieId = String(mid);
+                } catch {
+                    // ignore
+                }
+                initPlayerChain();
+            }
+        } catch (e) {
+            subFluentError("[monitor] error", e);
+        }
+    }, 100); // 100ms는 너무 빡셈. 200~500ms 추천
+}
+
             return playerFacade;
         } catch (e) {
             subFluentError("initPlayerChain failed:", e);
             return null;
         } finally {
-            // 반드시 해제 (실패/성공 모두)
             ns.hooks.initPlayerChainInFlight = false;
         }
+
+        
     }
 
     function sendMessageToContentScript() {
-        const post = (data: any) => window.postMessage({ source: SRC, ...data }, "*");
-
         const looksLikeTtml = (text: string): boolean => {
             const head = text.trimStart().slice(0, 200).toLowerCase();
             return head.startsWith("<tt") || head.includes("<tt ") || head.includes("<tt>");
         };
 
-        const getLangFromTtml = (ttml: string): string | null => {
-            // <tt ... xml:lang="vi"> 또는 xml:lang='vi'
-            const m = ttml.match(/<tt\b[^>]*\bxml:lang\s*=\s*["']([^"']+)["']/i);
-            return m?.[1]?.toLowerCase() ?? null;
+        const readXhrResponseTextSafe = (xhr: XMLHttpRequest): string => {
+            try {
+                const rt = (xhr as any).responseType as string;
+                // responseText is only valid for "" or "text"
+                if (!rt || rt === "text") {
+                    return typeof (xhr as any).responseText === "string" ? (xhr as any).responseText : "";
+                }
+                if (rt === "arraybuffer") {
+                    const buf = (xhr as any).response;
+                    if (buf && buf instanceof ArrayBuffer) {
+                        try {
+                            return new TextDecoder("utf-8").decode(new Uint8Array(buf));
+                        } catch {
+                            // Fallback: best-effort latin1 style decode
+                            let s = "";
+                            const u8 = new Uint8Array(buf);
+                            for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+                            return s;
+                        }
+                    }
+                    return "";
+                }
+                // blob/document/json etc. are ignored here
+                return "";
+            } catch {
+                return "";
+            }
         };
+
 
         type HookSetting = {
             host: string;
@@ -285,41 +627,27 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
             }
         };
 
-        const getMainContentViewableId = (rawUrl: string): string | null => {
-            try {
-                const u = new URL(rawUrl, window.location.href);
-                return u.searchParams.get("mainContentViewableId");
-            } catch {
-                return null;
+        (async function initHook() {
+            const ns = (window as any)[PAGE_NS];
+            ns.hooks ??= {};
+            if (ns.hooks.xhrHookInstalled) {
+                return;
             }
-        };
+            ns.hooks.xhrHookInstalled = true;
 
-        (async function initHook(callback: () => Promise<void>) {
-            const hookingSettings: Record<"ttmlXhrHook" | "licensedManifestXhrHook", HookSetting> = {
+            // Keep original methods only once (avoid wrapper-of-wrapper)
+            ns.hooks.origXhrOpen ??= XMLHttpRequest.prototype.open;
+            ns.hooks.origXhrSend ??= XMLHttpRequest.prototype.send;
+
+            const hookingSettings: Record<"ttmlXhrHook", HookSetting> = {
                 ttmlXhrHook: {
                     host: ".nflxvideo.net",
                     pathIncludes: "/",
                     requiredParams: ["o", "v", "e", "t"],
                 },
-                licensedManifestXhrHook: {
-                    host: "www.netflix.com",
-                    pathIncludes: "/msl/playapi/cadmium/licensedmanifest/1",
-                    requiredParams: [
-                        "reqAttempt",
-                        "reqName",
-                        "reqId",
-                        "mainContentViewableId",
-                        "clienttype",
-                        "uiversion",
-                        "browsername",
-                        "browserversion",
-                        "osname",
-                        "osversion",
-                    ],
-                },
             };
 
-            const origOpen = XMLHttpRequest.prototype.open;
+            const origOpen = (window as any)[PAGE_NS].hooks.origXhrOpen as typeof XMLHttpRequest.prototype.open;
             XMLHttpRequest.prototype.open = function (
                 this: XMLHttpRequest,
                 method: string,
@@ -332,101 +660,95 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
                 return origOpen.call(this, method, url as any, async as any, user as any, password as any);
             };
 
-            const origSend = XMLHttpRequest.prototype.send;
+            function extractNumericId(pathname: string): string | null {
+                const m = pathname.match(/(\d+)/);
+                return m ? m[1] : null;
+            }
+
+            const origSend = (window as any)[PAGE_NS].hooks.origXhrSend as typeof XMLHttpRequest.prototype.send;
             XMLHttpRequest.prototype.send = function (this: XMLHttpRequest, body?: Document | BodyInit | null) {
-                this.addEventListener("load", () => {
-                    try {
-                        const url = String((this as any).__subfluent_url || "");
-                        const ct = this.getResponseHeader("content-type") || "";
+                // Only attach our load listener for timed-text candidate requests.
+                // This avoids touching unrelated Netflix endpoints (e.g., msl_v1 router) and reduces noise.
+                const url = String((this as any).__subfluent_url || "");
+                const shouldAttach = url.includes(".nflxvideo.net");
 
-                        // 1) Licensed Manifest hook (episode start / switching)
-                        if (isHookingUrl(url, hookingSettings.licensedManifestXhrHook)) {
-                            if (!playerFacade?.getReady?.()) {
-                                subFluentDebug("player not ready yet. try re-init player chain.");
-                                // fire-and-forget: in-flight 가드가 있으니 연속 호출되어도 1번만 돈다.
-                                initPlayerChain(getDownloadableTrackList);
+                if (shouldAttach && !(this as any).__subfluent_loadAttached) {
+                    (this as any).__subfluent_loadAttached = true;
+
+                    this.addEventListener("load", () => {
+                        try {
+                            let ct = "";
+                            try {
+                                ct = this.getResponseHeader("content-type") || "";
+                            } catch {
+                                ct = "";
                             }
-                            const movieId = getMainContentViewableId(url);
-                            const respText = typeof (this as any).responseText === "string" ? (this as any).responseText : "";
-                            post({
-                                type: "LICENSED_MANIFEST",
-                                url,
-                                movieId,
-                                status: (this as any).status,
-                                responseText: respText,
-                            });
-                            return;
-                        }
 
-                        // 2) TTML hook (timed text)
-                        if (isHookingUrl(url, hookingSettings.ttmlXhrHook)) {
-                            const isXml = ct.includes("text/xml") || ct.includes("application/xml");
-                            if (isXml) {
-                                const maybeText = typeof (this as any).responseText === "string" ? (this as any).responseText : "";
-                                const bcp47 = getLangFromTtml(maybeText)
-                                const isBcp47Match = TEST_LANG.includes(bcp47 ?? "");
+                            // TTML hook (timed text)
+                            if (isHookingUrl(url, hookingSettings.ttmlXhrHook)) {
+                                const isXmlLike =
+                                    ct.includes("text/xml") || ct.includes("application/xml") || ct.includes("application/octet-stream");
+                                if (isXmlLike) {
+                                    const maybeText = readXhrResponseTextSafe(this as any);
+                                    if (maybeText && looksLikeTtml(maybeText) && isWatch()) {
+                                        // If we have no explicit requested list (and no pending waiter), treat it as PREFETCH.
+                                        // Prefetch may happen before playerFacade is ready, so store with empty meta/movieId.
+                                        const req = getRequestedTimedText();
+                                        const isRequestedFlow = (Array.isArray(req) && req.length > 0) || hasPendingTtmlWaiter();
 
-                                if (maybeText && looksLikeTtml(maybeText) && isBcp47Match) {
-                                    const langType = bcp47 == learningLang ? "learning" : "native";
-                                    subFluentDebug("ttml Hooking post", langType);
-                                    post({ type: "TTML_TEXT", langType: langType, ttml: maybeText });
-                                    return;
+                                        if (!isRequestedFlow) {
+                                            try {
+                                                const prefetchMeta: TimedTextTrackMeta = { bcp47: null, trackType: null, rawTrackType: null };
+                                                const key = `prefetch:${Date.now()}`;
+                                                setPrefetchTrack({ key, meta: prefetchMeta, ttml: maybeText, at: Date.now() });
+                                            } catch (e) {
+                                                subFluentError("[pageHook] failed to cache PREFETCH TTML", e);
+                                            }
+                                            return;
+                                        }
+
+                                        // Requested TTML: derive meta from current live player timedText track.
+                                        let outgoingMeta: TimedTextTrackMeta | null = null;
+                                        let movieId: string | null = null;
+                                        try {
+                                            movieId = playerFacade?.getMovieId?.()
+                                                ? playerFacade.getMovieId?.()
+                                                : extractNumericId(location.pathname);
+                                        } catch {
+                                            movieId = extractNumericId(location.pathname);
+                                        }
+                                        try {
+                                            const live = playerFacade?.getTimedTextTrack?.();
+                                            outgoingMeta = live ? toTrackMeta(live) : null;
+                                        } catch {
+                                            outgoingMeta = null;
+                                        }
+
+                                        post({
+                                            type: "TTML_TEXT",
+                                            ttml: maybeText,
+                                            movieId: movieId,
+                                            trackMeta: outgoingMeta,
+                                        });
+
+                                        // Notify the sequencer that a TTML has been forwarded.
+                                        notifyNextTtmlArrived();
+                                        return;
+                                    }
                                 }
                             }
+                        } catch (e) {
+                            subFluentError("SubFluent: error in XHR hook : ", e);
                         }
-                    } catch (e) {
-                        subFluentError("SubFluent: error in XHR hook : ", e);
-                    }
-                });
+                    });
+                }
 
                 return origSend.call(this, body as any);
             };
-            post({ type: "HOOK_READY", hooks: ["TTML_XHR", "LICENSEDMANIFEST_XHR"] });
-            try {
-                await callback();
-            } catch (e) {
-                subFluentError("initHook callback failed:", e);
-            }
-        }(getDownloadableTrackList));
-
-        // expose for initPlayerChain callback (so we can trigger it once player is ready)
-        (window as any)[PAGE_NS].hooks.getDownloadableTrackList = getDownloadableTrackList;
-
-        async function getDownloadableTrackList(): Promise<void> {
-            const trackList = await pollUntil<any[]>(() => {
-                const list = playerFacade?.getTimedTextTrackList?.();
-                return Array.isArray(list) && list.length > 0 ? list : null;
-            }, "TTML tracks");
-
-            const fiteredTracks = trackList?.filter((track: any) => {
-                const lang = track?.bcp47?.toLowerCase() || "";
-                return TEST_LANG.includes(lang);
-            });
-            subFluentDebug("filtered timed text tracks:", fiteredTracks);
-            requestTTMLForTrack(fiteredTracks);
-        }
-
-        function requestTTMLForTrack(trackList: any[]) {
-            if (!trackList?.length) {
-                subFluentDebug("no matching timed text tracks found");
-                return;
-            }
-
-            for (const track of trackList) {
-                try {
-                    playerFacade.setTimedTextTrack(track);
-                    subFluentDebug("setTimedTrack", track);
-                } catch (e) {
-                    subFluentError("setTimedTextTrack failed:", e);
-                }
-            }
-        }
+        }());
     }
 
-    // 1) Install XHR hooks ASAP (avoid missing the very first licensedManifest on initial load)
+    // 1) Initialize player separately; once ready, kick track list fetch if available
     sendMessageToContentScript();
-
-    // 2) Initialize player separately; once ready, kick track list fetch if available
-    initPlayerChain(() => {
-    });
+    initPlayerChain();
 })();
