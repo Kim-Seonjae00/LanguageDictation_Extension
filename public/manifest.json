@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "SubFluent",
+  "name": "SubDictate",
   "version": "0.1.0",
   "permissions": ["activeTab", "storage"],
   "host_permissions": ["https://www.netflix.com/*"],
