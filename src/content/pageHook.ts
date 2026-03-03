@@ -3,9 +3,9 @@ import { setSubFluentLogLevel, subFluentDebug, subFluentError } from "../shared/
 import type { PlayerFacade } from "../shared/player";
 import type { TimedTextTrackMeta } from "./state/contentState";
 
-setSubFluentLogLevel("DEBUG"); // 개발 중
-// setSubFluentLogLevel("INFO"); // 평소
-// setSubFluentLogLevel("WARN"); // 배포
+// setSubFluentLogLevel("DEBUG"); // 개발 중
+// // setSubFluentLogLevel("INFO"); // 평소
+setSubFluentLogLevel("WARN"); // 배포
 (function () {
     // ===== 0) 중복 주입 방지 (page world 전역 플래그) =====
     const PAGE_NS = "__SUBFLUENT__";
@@ -70,63 +70,6 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
         const items = g[PAGE_NS]?.hooks?.requestedTimedText;
         return Array.isArray(items) ? items : [];
     };
-
-    // const consumeRequestedTimedTextAtIndex = (index: number): TimedTextTrackMeta | null => {
-    //     const items = getRequestedTimedText();
-    //     if (!Array.isArray(items) || items.length === 0) return null;
-    //     if (index < 0 || index >= items.length) return null;
-
-    //     const removed = items.splice(index, 1)[0] || null;
-    //     // Persist the mutated array back (keep lifecycle consistent)
-    //     setRequestedTimedText(items);
-    //     return removed;
-    // };
-
-    // const matchRequestedTimedText = (
-    //     bcp47: string | null,
-    //     kind: TimedTextKind
-    // ): { meta: TimedTextTrackMeta; index: number } | null => {
-    //     const req = getRequestedTimedText();
-    //     if (req.length === 0) return null;
-
-    //     const b = bcp47 ? norm(bcp47) : "";
-    //     const pb = b ? primary(b) : "";
-
-    //     // Map observed kind -> expected rawTrackType token (best-effort)
-    //     const wantRawToken = kind === "CC" ? "caption" : kind === "SUBS" ? "sub" : kind === "FORCED" ? "forced" : "";
-
-    //     const findIndex = (pred: (r: TimedTextTrackMeta) => boolean): number => {
-    //         for (let i = 0; i < req.length; i++) {
-    //             if (pred(req[i])) return i;
-    //         }
-    //         return -1;
-    //     };
-
-    //     const rawHas = (r: TimedTextTrackMeta) => {
-    //         const raw = norm(r?.rawTrackType);
-    //         if (!wantRawToken) return true; // unknown kind: don't filter by raw
-    //         return raw.includes(wantRawToken);
-    //     };
-
-    //     // priority:
-    //     // 1) exact bcp47 + raw-kind match
-    //     // 2) primary(bcp47) + raw-kind match
-    //     // 3) exact bcp47
-    //     // 4) primary(bcp47)
-    //     let idx = findIndex((r) => norm(r?.bcp47) === b && rawHas(r));
-    //     if (idx >= 0) return { meta: req[idx], index: idx };
-
-    //     idx = findIndex((r) => primary(norm(r?.bcp47)) === pb && rawHas(r));
-    //     if (idx >= 0) return { meta: req[idx], index: idx };
-
-    //     idx = findIndex((r) => norm(r?.bcp47) === b);
-    //     if (idx >= 0) return { meta: req[idx], index: idx };
-
-    //     idx = findIndex((r) => primary(norm(r?.bcp47)) === pb);
-    //     if (idx >= 0) return { meta: req[idx], index: idx };
-
-    //     return null;
-    // };
 
     // --- TTML sequencing helpers ---
     // We want to setTimedTextTrack() one-by-one and only move to the next
@@ -551,7 +494,6 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
                 if (raw) prefetchTimedText.meta.rawTrackType = raw;
             }
             
-            subFluentDebug(prefetchTimedText, playerFacade.getTimedTextTrack());
             post({
                 type: "PLAYER_READY",
                 movieId: playerFacade.getMovieId(),
@@ -563,27 +505,59 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
             });
             
             // ---- start monitoring (singleton) ----
-            if (!ns.hooks.monitoringTimer) {
-                ns.hooks.lastReinitAt ??= 0;
-                ns.hooks.monitoringTimer = setInterval(() => {
-                    try {
-                        if (!playerFacade) return;
+if (!ns.hooks.monitoringTimer) {
+    ns.hooks.lastReinitAt ??= 0;
+    // Track movieId changes (next-episode often swaps movieId without fully destroying the player)
+    ns.hooks.lastMovieId ??= null;
+    ns.hooks.monitoringTimer = setInterval(() => {
+        try {
+            if (!playerFacade) return;
 
-                        const notReady = playerFacade.getReady?.() === false;
-
-                        // 쿨다운: 너무 자주 재init 방지
-                        if (notReady) {
-                            const now = Date.now();
-                            if (now - ns.hooks.lastReinitAt < 1500) return;
-                            ns.hooks.lastReinitAt = now;
-
-                            initPlayerChain();
-                        }
-                    } catch (e) {
-                        subFluentError("[monitor] error", e);
-                    }
-                }, 200); // 100ms는 너무 빡셈. 200~500ms 추천
+            // Detect movieId changes even when player stays "ready"
+            let curMovieId: string | null = null;
+            try {
+                curMovieId = playerFacade?.getMovieId?.() != null ? String(playerFacade.getMovieId?.()) : null;
+            } catch {
+                curMovieId = null;
             }
+
+            const prevMovieId = ns.hooks.lastMovieId != null ? String(ns.hooks.lastMovieId) : null;
+            if (curMovieId && curMovieId !== prevMovieId) {
+                const now = Date.now();
+                if (now - ns.hooks.lastReinitAt >= 1500) {
+                    ns.hooks.lastReinitAt = now;
+                    ns.hooks.lastMovieId = curMovieId;
+                    initPlayerChain();
+                    return;
+                }
+            }
+            // Keep lastMovieId updated once we can read it
+            if (curMovieId && curMovieId !== prevMovieId) {
+                ns.hooks.lastMovieId = curMovieId;
+            } else if (curMovieId && !prevMovieId) {
+                ns.hooks.lastMovieId = curMovieId;
+            }
+
+            const notReady = playerFacade.getReady?.() === false;
+
+            // 쿨다운: 너무 자주 재init 방지
+            if (notReady) {
+                const now = Date.now();
+                if (now - ns.hooks.lastReinitAt < 1500) return;
+                ns.hooks.lastReinitAt = now;
+                try {
+                    const mid = playerFacade?.getMovieId?.();
+                    if (mid != null) ns.hooks.lastMovieId = String(mid);
+                } catch {
+                    // ignore
+                }
+                initPlayerChain();
+            }
+        } catch (e) {
+            subFluentError("[monitor] error", e);
+        }
+    }, 100); // 100ms는 너무 빡셈. 200~500ms 추천
+}
 
             return playerFacade;
         } catch (e) {

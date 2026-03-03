@@ -1687,7 +1687,6 @@ window.addEventListener("pagehide", () => {
     stopCueLogging = null;
 
     stopPlayerObserver();
-    subFluentDebug("pagehide");
 });
 
 function mergeCuesByTime(cues: CueLike[]): CueLike[] {
@@ -2059,10 +2058,8 @@ let stopWatchFlagContainer: (() => void) | null = null;
 let rootPlayerObserver: MutationObserver | null = null;
 
 // Cleanup when player is removed/replaced (SPA route/back)
-function cleanupOnPlayerRemoved(reason: string) {
+function cleanupOnPlayerRemoved() {
     try {
-        subFluentDebug("[SubFluent] player removed:", reason);
-
         // stop cue loop + hide overlays
         stopCueLogging?.();
         stopCueLogging = null;
