@@ -2353,7 +2353,7 @@ function attachPlayerObserver() {
 
     // Player element changed: stop old watcher and attach a new one
     if (lastPlayerEl) {
-        cleanupOnPlayerRemoved("playerEl replaced");
+        cleanupOnPlayerRemoved();
     }
 
     lastPlayerEl = playerEl;
