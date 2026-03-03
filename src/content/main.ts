@@ -1,6 +1,6 @@
 import { Msg, type DictationResult, type SendDictation, type ExtMessage, type TimedTextTrack, type AudioTrack } from "../shared/protocol";
 import { parseTtmlSubtitle } from "../shared/ttmlParser";
-import { setSubFluentLogLevel, subFluentDebug,subFluentError } from "../shared/util";
+import { setSubFluentLogLevel,subFluentError } from "../shared/util";
 import { contentState, makeTrackKey, type TimedTextTrackMeta, type StoredTimedText } from "./state/contentState";
 
 setSubFluentLogLevel("DEBUG");
@@ -2343,7 +2343,7 @@ function attachPlayerObserver() {
     // Player removed (SPA route/back)
     if (!playerEl) {
         if (lastPlayerEl) {
-            cleanupOnPlayerRemoved("playerEl missing");
+            cleanupOnPlayerRemoved();
         }
         return;
     }
