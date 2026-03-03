@@ -3,8 +3,35 @@
 // NOTE: This is NOT localStorage/chrome.storage. It resets on reload.
 
 import { type TtmlSubtitle } from "../../shared/ttmlParser";
+import type { TimedTextTrack, AudioTrack } from "../../shared/protocol";
 
-export type LangType = "native" | "learning";
+// Subtitles are stored by a normalized track-meta key (not just BCP-47).
+// Reason: same bcp47 can exist as CC vs SUB, Assistive vs Primary, etc.
+export type Bcp47 = string; // legacy alias (do not use as storage key)
+export type TrackKey = string;
+
+export type TimedTextTrackMeta = {
+  bcp47: string | null;
+  trackType: string | null;
+  rawTrackType: string | null;
+};
+
+export type StoredTimedText = {
+  key: TrackKey;
+  meta: TimedTextTrackMeta;
+  subtitle: TtmlSubtitle;
+};
+
+const norm = (v: any) => String(v ?? "").trim().toLowerCase();
+
+export function makeTrackKey(meta: TimedTextTrackMeta): TrackKey {
+  const b = meta?.bcp47 ? norm(meta.bcp47) : "";
+  const tt = meta?.trackType ? norm(meta.trackType) : "";
+  const rt = meta?.rawTrackType ? norm(meta.rawTrackType) : "";
+  return `${b}|${tt}|${rt}`;
+}
+
+export type SubtitlesState = "waiting0" | "waiting1" | "ready" | "active";
 
 type Unsubscribe = () => void;
 
@@ -12,16 +39,28 @@ type MovieIdListener = (next: string | null, prev: string | null) => void;
 
 type SubtitlesChangedPayload = {
   movieId: string;
-  lang: LangType;
+  key: TrackKey;
+  meta: TimedTextTrackMeta;
   subtitle: TtmlSubtitle;
 };
-
 type SubtitlesChangedListener = (payload: SubtitlesChangedPayload) => void;
 
 type SubtitlesReadyPayload = {
   movieId: string;
-  bucket: Required<Record<LangType, TtmlSubtitle>>;
+  state: SubtitlesState;
+  // Snapshot of all timed-text stored for this movieId
+  bucket: Record<TrackKey, StoredTimedText>;
 };
+
+
+type PlayerReadyPayload = {
+  movieId: string | null;
+  audioList: AudioTrack[];
+  trackList: TimedTextTrack[];
+  currentAudio: AudioTrack | null;
+};
+
+type PlayerReadyListener = (payload: PlayerReadyPayload) => void;
 
 type SubtitlesReadyListener = (payload: SubtitlesReadyPayload) => void;
 
@@ -33,16 +72,76 @@ type SubtitlesReadyListener = (payload: SubtitlesReadyPayload) => void;
 export class ContentState {
   private _movieId: string | null = null;
   private _nextMovieId: string | null = null;
-  // movieId -> { native, learning }
-  private _downloadedTimedTextedTrackList: Map<
-    string,
-    Partial<Record<LangType, TtmlSubtitle>>
-  > = new Map();
+  // movieId -> (trackKey -> storedTimedText)
+  private _downloadedTimedTextedTrackList: Map<string, Map<TrackKey, StoredTimedText>> = new Map();
 
   private _movieIdListeners = new Set<MovieIdListener>();
   private _subtitlesChangedListeners = new Set<SubtitlesChangedListener>();
   private _subtitlesReadyListeners = new Set<SubtitlesReadyListener>();
   private _readyMovies = new Set<string>();
+
+  // ----- Player / track info (from pageHook PLAYER_READY) -----
+  private _audioList: AudioTrack[] = [];
+  private _timedTextTrackList: TimedTextTrack[] = [];
+  private _currentAudio: AudioTrack | null = null;
+  private _currentTimedText: TimedTextTrack | null = null;
+  private _playerReadyListeners = new Set<PlayerReadyListener>();
+
+  private _player: any = null;
+
+  get player(): any {
+    return this._player;
+  }
+
+  set player(next: any) {
+    this._player = next;
+  }
+
+  // -------------------- tracks / player-ready --------------------
+  get audioList(): AudioTrack[] {
+    return this._audioList;
+  }
+
+  get timedTextTrackList(): TimedTextTrack[] {
+    return this._timedTextTrackList;
+  }
+
+  get currentAudio(): AudioTrack | null {
+    return this._currentAudio;
+  }
+
+  get currentTimedText(): TimedTextTrack | null {
+    return this._currentTimedText;
+  }
+
+  setPlayerReady(payload: PlayerReadyPayload): void {
+    // keep track info
+    this._audioList = payload.audioList ?? [];
+    this._timedTextTrackList = payload.trackList ?? [];
+    this._currentAudio = payload.currentAudio ?? null;
+
+    // movieId can be null (some titles/pages). If provided, also sync movieId.
+    if (payload.movieId != null) {
+      try {
+        this.setMovieId(payload.movieId);
+      } catch {
+        // ignore
+      }
+    }
+
+    for (const fn of this._playerReadyListeners) {
+      try {
+        fn(payload);
+      } catch {
+        // ignore subscriber errors
+      }
+    }
+  }
+
+  subscribePlayerReady(fn: PlayerReadyListener): Unsubscribe {
+    this._playerReadyListeners.add(fn);
+    return () => this._playerReadyListeners.delete(fn);
+  }
 
   // -------------------- movieId --------------------
   get movieId(): string | null {
@@ -92,40 +191,60 @@ export class ContentState {
   /**
    * movieId 버킷을 가져오거나 없으면 생성
    */
-  private ensureBucket(movieId: string): Partial<Record<LangType, TtmlSubtitle>> {
+  private ensureBucket(movieId: string): Map<TrackKey, StoredTimedText> {
     const existing = this._downloadedTimedTextedTrackList.get(movieId);
     if (existing) return existing;
 
-    const created: Partial<Record<LangType, TtmlSubtitle>> = {};
+    const created = new Map<TrackKey, StoredTimedText>();
     this._downloadedTimedTextedTrackList.set(movieId, created);
     return created;
   }
 
   /**
-   * 특정 movieId에 해당하는 자막(native/learning)을 저장
+   * 특정 movieId에 해당하는 timedText(자막 트랙)을 저장
+   * - key는 trackMeta(bcp47/trackType/rawTrackType/nttmTextType)로 구성
    */
-  setSubtitle(movieId: string, lang: LangType, subtitle: TtmlSubtitle): void {
+  setSubtitle(movieId: string, trackMeta: TimedTextTrackMeta, subtitle: TtmlSubtitle): void {
     const bucket = this.ensureBucket(movieId);
-    bucket[lang] = subtitle;
 
-    // 두 언어(native/learning)가 모두 채워졌는지 체크
-    const native = bucket.native;
-    const learning = bucket.learning;
-    if (native && learning && !this._readyMovies.has(movieId)) {
-      this._readyMovies.add(movieId);
-      const readyBucket = { native, learning } as Required<Record<LangType, TtmlSubtitle>>;
-      for (const fn of this._subtitlesReadyListeners) {
-        try {
-          fn({ movieId, bucket: readyBucket });
-        } catch {
-          // ignore subscriber errors
+    const meta: TimedTextTrackMeta = {
+      bcp47: trackMeta?.bcp47 != null ? norm(trackMeta.bcp47) : null,
+      trackType: trackMeta?.trackType != null ? norm(trackMeta.trackType) : null,
+      rawTrackType: trackMeta?.rawTrackType != null ? norm(trackMeta.rawTrackType) : null,
+    };
+
+    const key = makeTrackKey(meta);
+    if (!key) return;
+
+    const stored: StoredTimedText = { key, meta, subtitle };
+    bucket.set(key, stored);
+
+    // "ready" heuristic: at least 2 distinct entries cached for this movieId.
+    // NOTE: ready/active 상태에서는 매번 notify 하도록 유지.
+    const state = this.getSubtitlesState(movieId);
+
+    if (bucket.size >= 2) {
+      if (!this._readyMovies.has(movieId)) {
+        this._readyMovies.add(movieId);
+      }
+
+      const snapshot: Record<TrackKey, StoredTimedText> = {};
+      for (const [k, v] of bucket.entries()) snapshot[k] = v;
+
+      if (state === "ready" || state === "active") {
+        for (const fn of this._subtitlesReadyListeners) {
+          try {
+            fn({ movieId, state, bucket: snapshot });
+          } catch {
+            // ignore subscriber errors
+          }
         }
       }
     }
 
     for (const fn of this._subtitlesChangedListeners) {
       try {
-        fn({ movieId, lang, subtitle });
+        fn({ movieId, key, meta, subtitle });
       } catch {
         // ignore subscriber errors
       }
@@ -135,13 +254,20 @@ export class ContentState {
   /**
    * 현재 movieId 기준으로 저장 (movieId가 null이면 no-op)
    */
-  setSubtitleForMovie(movieId: string,lang: LangType, subtitle: TtmlSubtitle): void {
+  setSubtitleForMovie(movieId: string, trackMeta: TimedTextTrackMeta, subtitle: TtmlSubtitle): void {
     if (this._movieId !== movieId && this._nextMovieId !== movieId) return;
-    this.setSubtitle(movieId, lang, subtitle);
+    this.setSubtitle(movieId, trackMeta, subtitle);
   }
 
-  getSubtitle(movieId: string, lang: LangType): TtmlSubtitle | undefined {
-    return this._downloadedTimedTextedTrackList.get(movieId)?.[lang];
+  getSubtitleByKey(movieId: string, key: TrackKey): TtmlSubtitle | undefined {
+    const bucket = this._downloadedTimedTextedTrackList.get(movieId);
+    if (!bucket) return undefined;
+    return bucket.get(String(key || "").toLowerCase())?.subtitle;
+  }
+
+  getSubtitleByMeta(movieId: string, meta: TimedTextTrackMeta): TtmlSubtitle | undefined {
+    const key = makeTrackKey(meta);
+    return this.getSubtitleByKey(movieId, key);
   }
 
   getSubtitles() {
@@ -151,13 +277,35 @@ export class ContentState {
   /**
    * 현재 movieId 기준 조회
    */
-  getSubtitleForCurrentMovie(lang: LangType): TtmlSubtitle | undefined {
+  getSubtitleForCurrentMovieByKey(key: TrackKey): TtmlSubtitle | undefined {
     if (!this._movieId) return undefined;
-    return this.getSubtitle(this._movieId, lang);
+    return this.getSubtitleByKey(this._movieId, key);
   }
 
-  getBucket(movieId: string): Partial<Record<LangType, TtmlSubtitle>> | undefined {
+  getSubtitleForCurrentMovieByMeta(meta: TimedTextTrackMeta): TtmlSubtitle | undefined {
+    if (!this._movieId) return undefined;
+    return this.getSubtitleByMeta(this._movieId, meta);
+  }
+
+  getBucket(movieId: string): Map<TrackKey, StoredTimedText> | undefined {
     return this._downloadedTimedTextedTrackList.get(movieId);
+  }
+
+  /**
+   * 자막 상태 계산
+   * - waiting0: native/learning 둘 다 없음
+   * - waiting1: 둘 중 하나만 있음
+   * - ready: 둘 다 있으나 현재 movieId가 아님
+   * - active: 둘 다 있고 현재 movieId임
+   */
+  getSubtitlesState(movieId: string): SubtitlesState {
+    const b = this._downloadedTimedTextedTrackList.get(movieId);
+    const size = b ? b.size : 0;
+
+    if (size === 0) return "waiting0";
+    if (size === 1) return "waiting1";
+
+    return this._movieId === movieId ? "active" : "ready";
   }
 
   /**
@@ -186,7 +334,7 @@ export class ContentState {
    */
   isSubtitlesReady(movieId: string): boolean {
     const b = this._downloadedTimedTextedTrackList.get(movieId);
-    return !!(b?.native && b?.learning);
+    return (b?.size ?? 0) >= 2;
   }
 
   /**

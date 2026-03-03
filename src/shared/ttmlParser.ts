@@ -21,6 +21,12 @@ export type TtmlRegion = {
   displayAlign?: string; // before/after/center
   origin?: string;       // "10.000% 10.000%"
   extent?: string;       // "80.000% 80.000%"
+
+  // Parsed numeric values (percent-based)
+  originX?: number; // 0~100
+  originY?: number; // 0~100
+  extentW?: number; // 0~100
+  extentH?: number; // 0~100
 };
 
 export type TtmlStyle = {
@@ -45,6 +51,10 @@ export type TtmlCue = Cue & {
   region?: string;      // region0/region1
   style?: string;       // style0/style1
   raw?: string;         // optional: 원문 텍스트(디버깅)
+
+  // Resolved region coordinates (for ordering/visualization)
+  regionX?: number; // originX
+  regionY?: number; // originY
 };
 
 export type TtmlDocument = {
@@ -102,16 +112,47 @@ export function parseTtml(ttml: string): TtmlDocument {
   }
 
   // ---- layout/regions ----
+  // Regions are stored in two forms:
+  // - raw strings (origin/extent) as provided by TTML
+  // - parsed numeric percent pairs (originX/originY/extentW/extentH) for easy ordering & visualization
+  const parsePercentPair = (v?: string): { a: number; b: number } | null => {
+    if (!v) return null;
+    const parts = v.trim().split(/\s+/);
+    if (parts.length < 2) return null;
+
+    const toNum = (s: string): number => {
+      // handles "62.500%" -> 62.5
+      const n = s.endsWith("%") ? s.slice(0, -1) : s;
+      const x = Number(n);
+      return Number.isFinite(x) ? x : NaN;
+    };
+
+    const a = toNum(parts[0]);
+    const b = toNum(parts[1]);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+    return { a, b };
+  };
+
   const regions: Record<string, TtmlRegion> = {};
   for (const r of Array.from(doc.getElementsByTagName("region"))) {
     const id = r.getAttribute("xml:id") || r.getAttribute("id");
     if (!id) continue;
 
+    const origin = r.getAttribute("tts:origin") || r.getAttribute("origin") || undefined;
+    const extent = r.getAttribute("tts:extent") || r.getAttribute("extent") || undefined;
+
+    const o = parsePercentPair(origin);
+    const e = parsePercentPair(extent);
+
     regions[id] = {
       id,
       displayAlign: r.getAttribute("tts:displayAlign") || r.getAttribute("displayAlign") || undefined,
-      origin: r.getAttribute("tts:origin") || r.getAttribute("origin") || undefined,
-      extent: r.getAttribute("tts:extent") || r.getAttribute("extent") || undefined,
+      origin,
+      extent,
+      originX: o?.a,
+      originY: o?.b,
+      extentW: e?.a,
+      extentH: e?.b,
     };
   }
 
@@ -170,6 +211,8 @@ export function parseTtml(ttml: string): TtmlDocument {
       const region = p.getAttribute("region") || undefined;
       const style = p.getAttribute("style") || undefined;
 
+      const regionInfo = region ? regions[region] : undefined;
+
       return {
         start,
         end: finish,
@@ -177,6 +220,8 @@ export function parseTtml(ttml: string): TtmlDocument {
         id,
         region,
         style,
+        regionX: regionInfo?.originX,
+        regionY: regionInfo?.originY,
       };
     })
     .filter(isNotNull);

@@ -37,3 +37,29 @@ export type ExtMessage<T extends MsgType = MsgType> =
 export type ExtNoPayloadMessage<T extends NoPayloadMsgType = NoPayloadMsgType> = 
   { type: T };
 
+export type TimedTextTrack = {
+  trackId: string;
+  bcp47: string;      // e.g., "en", "ko"
+  channels?: string;   // e.g., "2", "6"
+  dipsplayName: string; // e.g., "English", "Korean"
+  isForcedNarrative: boolean;
+  isImageBased: boolean;
+  isNoneTrack: boolean;
+  rawTrackType: string; // e.g., "TTML", "VTT"
+  subType?: string;      // e.g., "SDH"
+  trackType: string;    // e.g., "SUBTITLE", "CAPTION"
+  variant?: string; // e.g., "SDH"
+}
+
+export type AudioTrack = {
+  trackId: string;
+  bcp47: string;      // e.g., "en", "ko"
+  channels?: string;   // e.g., "2", "6"
+  displayName: string; // e.g., "English", "Korean"
+  isNative: boolean;
+  rawTrackType: string; // e.g., "AUDIO"
+  subType?: string;      // e.g., "COMMENTARY"
+  surroundFormatLabel?: string; // e.g., "5.1", "2.0"
+  trackType: string;    // e.g., "AUDIO"
+  variant?: string; // e.g., "COMMENTARY"
+}

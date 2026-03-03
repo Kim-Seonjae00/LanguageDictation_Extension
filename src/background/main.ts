@@ -1,5 +1,19 @@
 import { Msg, type DictationResult } from "../shared/protocol";
 
+function normalizeForScoring(s: string): string {
+    return (s || "")
+        // remove [ ... ] and ( ... ) blocks (caption metadata)
+        .replace(/\[[^\]]*\]/g, " ")
+        .replace(/\([^)]*\)/g, " ")
+        // remove speaker-leading hyphens: "-Hello" / "- Hello"
+        .replace(/(^|\s)-\s*/g, "$1")
+        // keep letters/numbers/spaces/apostrophes, drop other punctuation
+        .replace(/[^a-zA-Z0-9\s']/g, " ")
+        .toUpperCase()
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg?.type === Msg.DICTATION_SEND) {
         console.log("[BG] received dictation send message:", sender, msg);
@@ -7,14 +21,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const expected = msg.payload.expected;
         const actual = msg.payload.actual;
 
-        const expectedWords = expected.trim().split(/\s+/);
-        const actualWords = actual.trim().split(/\s+/);
+        const expectedNorm = normalizeForScoring(expected);
+        const actualNorm = normalizeForScoring(actual);
+
+        const expectedWords = expectedNorm ? expectedNorm.split(/\s+/) : [];
+        const actualWords = actualNorm ? actualNorm.split(/\s+/) : [];
+
         const wrong: number[] = [];
 
-        for (let i = 0; i < expectedWords.length; i++) {
-            console.log("[BG] comparing words at index", i, ":", expectedWords[i], "vs", actualWords[i]);
-            if (expectedWords[i] !== actualWords[i]) {
-                console.log("[BG] word mismatch at index", i, ":", expectedWords[i], "!=", actualWords[i]);
+        const maxLen = Math.max(expectedWords.length, actualWords.length);
+        for (let i = 0; i < maxLen; i++) {
+            const ew = expectedWords[i] ?? "";
+            const aw = actualWords[i] ?? "";
+            console.log("[BG] comparing words at index", i, ":", ew, "vs", aw);
+            if (ew !== aw) {
+                console.log("[BG] word mismatch at index", i, ":", ew, "!=", aw);
                 wrong.push(i);
             }
         }

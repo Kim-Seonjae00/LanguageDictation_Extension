@@ -20,30 +20,38 @@ function shouldLog(level: LogLevel): boolean {
     return LEVEL_PRIORITY[level] >= LEVEL_PRIORITY[currentLogLevel];
 }
 
-function formatPrefix(level: LogLevel) {
-    return `[SubFluent][${level}]`;
-}
+const PREFIX: Record<LogLevel, string> = {
+    DEBUG: "[SubFluent][DEBUG]",
+    INFO: "[SubFluent][INFO]",
+    WARN: "[SubFluent][WARN]",
+    ERROR: "[SubFluent][ERROR]",
+};
 
 // ---- Facade APIs ----
 
-export function subFluentDebug(msg: string, ...args: any[]) {
+export function subFluentDebug(msg: any, ...args: any[]) {
     if (!shouldLog("DEBUG")) return;
-    console.debug(formatPrefix("DEBUG"), msg, ...args);
+    // Make the first console argument a plain string to keep logs clean under minifiers.
+    if (typeof msg === "string") console.debug(`${PREFIX.DEBUG} ${msg}`, ...args);
+    else console.debug(PREFIX.DEBUG, msg, ...args);
 }
 
-export function subFluentInfo(msg: string, ...args: any[]) {
+export function subFluentInfo(msg: any, ...args: any[]) {
     if (!shouldLog("INFO")) return;
-    console.info(formatPrefix("INFO"), msg, ...args);
+    if (typeof msg === "string") console.info(`${PREFIX.INFO} ${msg}`, ...args);
+    else console.info(PREFIX.INFO, msg, ...args);
 }
 
-export function subFluentWarn(msg: string, ...args: any[]) {
+export function subFluentWarn(msg: any, ...args: any[]) {
     if (!shouldLog("WARN")) return;
-    console.warn(formatPrefix("WARN"), msg, ...args);
+    if (typeof msg === "string") console.warn(`${PREFIX.WARN} ${msg}`, ...args);
+    else console.warn(PREFIX.WARN, msg, ...args);
 }
 
-export function subFluentError(msg: string, ...args: any[]) {
+export function subFluentError(msg: any, ...args: any[]) {
     if (!shouldLog("ERROR")) return;
-    console.error(formatPrefix("ERROR"), msg, ...args);
+    if (typeof msg === "string") console.error(`${PREFIX.ERROR} ${msg}`, ...args);
+    else console.error(PREFIX.ERROR, msg, ...args);
 }
 
 // Backward compatibility (optional): keep old name as INFO
