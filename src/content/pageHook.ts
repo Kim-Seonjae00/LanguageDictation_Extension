@@ -1,11 +1,11 @@
 // src/content/pageHook.ts
-import { setSubFluentLogLevel, subFluentDebug, subFluentError } from "../shared/util";
+import { setSubFluentLogLevel, subFluentDebug, subFluentError, subFluentInfo } from "../shared/util";
 import type { PlayerFacade } from "../shared/player";
 import type { TimedTextTrackMeta } from "./state/contentState";
 
-// setSubFluentLogLevel("DEBUG"); // 개발 중
+setSubFluentLogLevel("DEBUG"); // 개발 중
 // // setSubFluentLogLevel("INFO"); // 평소
-setSubFluentLogLevel("WARN"); // 배포
+// setSubFluentLogLevel("WARN"); // 배포
 (function () {
     // ===== 0) 중복 주입 방지 (page world 전역 플래그) =====
     const PAGE_NS = "__SUBFLUENT__";
@@ -201,6 +201,7 @@ setSubFluentLogLevel("WARN"); // 배포
 
             // --- network / congestion ---
             getCongestionInfo: (h: any) => p?.getCongestionInfo?.(h),
+            getSessionSummary: () => p?.getSessionSummary(),
 
             // --- internal ---
             iVa: p?.iVa,
@@ -326,7 +327,7 @@ setSubFluentLogLevel("WARN"); // 배포
                                     continue;
                                 }
                                 lastTrackId = tid;
-
+                                subFluentDebug(playerFacade.getSessionSummary());
                                 await waitForNextTtmlForward(10_000);
                             } catch (e) {
                                 subFluentError(
@@ -430,6 +431,12 @@ setSubFluentLogLevel("WARN"); // 배포
     }
 
     async function initPlayerChain() {
+        subFluentDebug("InitPlayerChain");
+        // SPA route guard: only attempt to init player on /watch/
+        if (!isWatch()) {
+            return null;
+        }
+        subFluentDebug("InitPlayerChain Start");
         const ns = (window as any)[PAGE_NS];
         ns.hooks ??= {};
         
@@ -451,10 +458,12 @@ setSubFluentLogLevel("WARN"); // 배포
             }, "videoPlayer");
             
             const sessionId = await pollUntil<string>(() => {
-                return videoPlayer?.getAllPlayerSessionIds?.()?.[0];
+                const ids = videoPlayer?.getAllPlayerSessionIds?.();
+                return Array.isArray(ids) && ids.length > 0 ? String(ids[0]) : null;
             }, "sessionId");
-            
+
             const player = await pollUntil<any>(() => {
+                if (!sessionId) return null;
                 return videoPlayer?.getVideoPlayerBySessionId?.(sessionId);
             }, "player");
             
@@ -494,6 +503,9 @@ setSubFluentLogLevel("WARN"); // 배포
                 if (raw) prefetchTimedText.meta.rawTrackType = raw;
             }
             
+            subFluentDebug("audioList", audioList);
+            subFluentDebug("trackList", trackList);
+
             post({
                 type: "PLAYER_READY",
                 movieId: playerFacade.getMovieId(),
@@ -505,59 +517,69 @@ setSubFluentLogLevel("WARN"); // 배포
             });
             
             // ---- start monitoring (singleton) ----
-if (!ns.hooks.monitoringTimer) {
-    ns.hooks.lastReinitAt ??= 0;
-    // Track movieId changes (next-episode often swaps movieId without fully destroying the player)
-    ns.hooks.lastMovieId ??= null;
-    ns.hooks.monitoringTimer = setInterval(() => {
-        try {
-            if (!playerFacade) return;
+            if (!ns.hooks.monitoringTimer) {
+                ns.hooks.lastReinitAt ??= 0;
+                // Track movieId changes (next-episode often swaps movieId without fully destroying the player)
+                ns.hooks.lastMovieId ??= null;
+                ns.hooks.monitoringTimer = setInterval(() => {
+                    try {
+                        if (!isWatch()) {
+                            playerFacade = null;
+                            ns.hooks.lastMovieId = null;
+                            return;
+                        }
 
-            // Detect movieId changes even when player stays "ready"
-            let curMovieId: string | null = null;
-            try {
-                curMovieId = playerFacade?.getMovieId?.() != null ? String(playerFacade.getMovieId?.()) : null;
-            } catch {
-                curMovieId = null;
-            }
+                        if (!playerFacade) return;
 
-            const prevMovieId = ns.hooks.lastMovieId != null ? String(ns.hooks.lastMovieId) : null;
-            if (curMovieId && curMovieId !== prevMovieId) {
-                const now = Date.now();
-                if (now - ns.hooks.lastReinitAt >= 1500) {
-                    ns.hooks.lastReinitAt = now;
-                    ns.hooks.lastMovieId = curMovieId;
-                    initPlayerChain();
-                    return;
-                }
-            }
-            // Keep lastMovieId updated once we can read it
-            if (curMovieId && curMovieId !== prevMovieId) {
-                ns.hooks.lastMovieId = curMovieId;
-            } else if (curMovieId && !prevMovieId) {
-                ns.hooks.lastMovieId = curMovieId;
-            }
+                        // Detect movieId changes even when player stays "ready"
+                        let curMovieId: string | null = null;
+                        try {
+                            curMovieId = playerFacade?.getMovieId?.() != null ? String(playerFacade.getMovieId?.()) : null;
+                        } catch {
+                            curMovieId = null;
+                        }
 
-            const notReady = playerFacade.getReady?.() === false;
+                        const prevMovieId = ns.hooks.lastMovieId != null ? String(ns.hooks.lastMovieId) : null;
+                        if (curMovieId && curMovieId !== prevMovieId) {
+                            const now = Date.now();
+                            if (now - ns.hooks.lastReinitAt >= 1500) {
+                                ns.hooks.lastReinitAt = now;
+                                ns.hooks.lastMovieId = curMovieId;
+                                if(isWatch()){
+                                    initPlayerChain();
+                                }
+                                return;
+                            }
+                        }
+                        // Keep lastMovieId updated once we can read it
+                        if (curMovieId && curMovieId !== prevMovieId) {
+                            ns.hooks.lastMovieId = curMovieId;
+                        } else if (curMovieId && !prevMovieId) {
+                            ns.hooks.lastMovieId = curMovieId;
+                        }
 
-            // 쿨다운: 너무 자주 재init 방지
-            if (notReady) {
-                const now = Date.now();
-                if (now - ns.hooks.lastReinitAt < 1500) return;
-                ns.hooks.lastReinitAt = now;
-                try {
-                    const mid = playerFacade?.getMovieId?.();
-                    if (mid != null) ns.hooks.lastMovieId = String(mid);
-                } catch {
-                    // ignore
-                }
-                initPlayerChain();
+                        const notReady = playerFacade.getReady?.() === false;
+
+                        // 쿨다운: 너무 자주 재init 방지
+                        if (notReady) {
+                            const now = Date.now();
+                            if (now - ns.hooks.lastReinitAt < 1500) return;
+                            ns.hooks.lastReinitAt = now;
+                            try {
+                                const mid = playerFacade?.getMovieId?.();
+                                if (mid != null) ns.hooks.lastMovieId = String(mid);
+                            } catch {
+                                // ignore
+                            }
+                            if(isWatch())
+                                initPlayerChain();
+                            
+                        }
+                    } catch (e) {
+                        subFluentError("[monitor] error", e);
+                    }
+                }, 150); // 100ms는 너무 빡셈. 200~500ms 추천
             }
-        } catch (e) {
-            subFluentError("[monitor] error", e);
-        }
-    }, 100); // 100ms는 너무 빡셈. 200~500ms 추천
-}
 
             return playerFacade;
         } catch (e) {
@@ -566,8 +588,6 @@ if (!ns.hooks.monitoringTimer) {
         } finally {
             ns.hooks.initPlayerChainInFlight = false;
         }
-
-        
     }
 
     function sendMessageToContentScript() {
@@ -628,6 +648,7 @@ if (!ns.hooks.monitoringTimer) {
         };
 
         (async function initHook() {
+            subFluentDebug("init Hook!");
             const ns = (window as any)[PAGE_NS];
             ns.hooks ??= {};
             if (ns.hooks.xhrHookInstalled) {
@@ -749,6 +770,41 @@ if (!ns.hooks.monitoringTimer) {
     }
 
     // 1) Initialize player separately; once ready, kick track list fetch if available
+    let sfLastPath = location.pathname;
+
+    const triggerInitOnWatchRoute = () => {
+        const prevPath = sfLastPath;
+        const nextPath = location.pathname;
+        if (nextPath === prevPath) return;
+        sfLastPath = nextPath;
+
+        const wasWatch = prevPath.startsWith("/watch/");
+        const nowWatch = nextPath.startsWith("/watch/");
+
+        if (!wasWatch && nowWatch) {
+            subFluentDebug("[route] entered watch, init player chain");
+            initPlayerChain();
+        }
+    };
+
+    const origPushState = history.pushState;
+    history.pushState = function (...args) {
+        const ret = origPushState.apply(this, args as any);
+        setTimeout(triggerInitOnWatchRoute, 0);
+        return ret;
+    };
+
+    const origReplaceState = history.replaceState;
+    history.replaceState = function (...args) {
+        const ret = origReplaceState.apply(this, args as any);
+        setTimeout(triggerInitOnWatchRoute, 0);
+        return ret;
+    };
+
+    window.addEventListener("popstate", () => {
+        setTimeout(triggerInitOnWatchRoute, 0);
+    });
+
     sendMessageToContentScript();
     initPlayerChain();
 })();

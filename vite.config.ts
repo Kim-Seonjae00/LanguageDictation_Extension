@@ -6,31 +6,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 export default defineConfig(({ mode }): UserConfig => {
-  // 1) popup build (ESM/HTML 엔트리)
-  if (mode === "popup") {
-    return {
-      publicDir: "public",
-      build: {
-        outDir: "dist",
-        emptyOutDir: true,
-        rollupOptions: {
-          input: {
-            popup: resolve(__dirname, "public/popup.html"),
-          } as Record<string, string>,
-          output: {
-            entryFileNames: "popup.js",
-          },
-        },
-      },
-    };
-  }
-
   // 2) content build (Chrome content script: IIFE 단일파일)
   if (mode === "content") {
     return {
       build: {
         outDir: "dist",
-        emptyOutDir: false, // popup 결과 유지
+        emptyOutDir: true, // popup 제거: content 단독 빌드
         rollupOptions: {
           input: {
             content: resolve(__dirname, "src/content/main.ts"),
@@ -80,18 +61,19 @@ export default defineConfig(({ mode }): UserConfig => {
     };
   }
 
-  // 기본값: 그냥 popup로 빌드되게
+  // 기본값: content로 빌드 (popup 제거)
   return {
-    publicDir: "public",
     build: {
       outDir: "dist",
       emptyOutDir: true,
       rollupOptions: {
         input: {
-          popup: resolve(__dirname, "public/popup.html"),
+          content: resolve(__dirname, "src/content/main.ts"),
         } as Record<string, string>,
         output: {
-          entryFileNames: "popup.js",
+          format: "iife",
+          inlineDynamicImports: true,
+          entryFileNames: "content.js",
         },
       },
     },

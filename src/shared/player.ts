@@ -29,6 +29,7 @@ export type PlayerFacade = {
         getTimeCodes?: () => any;
         goToNextSegment?: (h: any, k: any) => any;
         getTrickPlayFrame?: (h: any) => any;
+        getSessionSummary?:() => any;
 
         // --- element / sizing ---
         getElement?: () => any;

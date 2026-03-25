@@ -1,6 +1,6 @@
 import { Msg, type DictationResult, type SendDictation, type ExtMessage, type TimedTextTrack, type AudioTrack } from "../shared/protocol";
 import { parseTtmlSubtitle } from "../shared/ttmlParser";
-import { setSubFluentLogLevel,subFluentError } from "../shared/util";
+import { setSubFluentLogLevel,subFluentDebug,subFluentError } from "../shared/util";
 import { contentState, makeTrackKey, type TimedTextTrackMeta, type StoredTimedText } from "./state/contentState";
 
 setSubFluentLogLevel("DEBUG");
@@ -41,6 +41,27 @@ function rebuildCueWindowIfReady() {
     if (!sfLatestMovieId || !sfLatestLearningMerged || !sfLatestNativeMerged) return;
     // generateWindow will internally decide whether to collapse to sentence-map based on `sfDictationMode`
     generateWindow(sfLatestMovieId, sfLatestLearningMerged as any, sfLatestNativeMerged as any, startCueLogging);
+}
+
+function resetSubtitleSessionState(reason = "") {
+    try {
+        if (reason) {
+            console.debug("[SubFluent] resetSubtitleSessionState:", reason);
+        }
+    } catch {
+        // ignore
+    }
+
+    sfLatestMovieId = null;
+    sfLatestLearningMerged = null;
+    sfLatestNativeMerged = null;
+    sfLastDictationKey = null;
+    sfExpectedStart = 0;
+    sfExpectedText = "";
+    sfNativeText = "";
+
+    clearSubtitleText();
+    updateSubtitleOverlayVisibility();
 }
 
 let sfFocusGuardOn = false;
@@ -284,7 +305,7 @@ function ensureDictationOverlay() {
 
     // --- top bar ---
     const title = document.createElement("div");
-    title.textContent = "SubFluent Dictation";
+    title.textContent = "SubDictate";
     title.style.fontSize = "18px";
     title.style.fontWeight = "750";
     title.style.marginBottom = "0px";
@@ -849,7 +870,7 @@ function ensureSettingsOverlay() {
     topBar.style.marginBottom = "12px";
 
     const title = document.createElement("div");
-    title.textContent = "SubFluent 설정";
+    title.textContent = "SubDictate 설정";
     title.style.fontSize = "16px";
     title.style.fontWeight = "750";
 
@@ -1837,13 +1858,21 @@ window.addEventListener("message", async (ev) => {
     if (d?.source !== PAGE_HOOK_SOURCE) return;
 
     if (d?.type === "PLAYER_READY") {
+        const incomingMovieId = ev.data?.movieId != null ? String(ev.data.movieId) : null;
+        const prevMovieId = contentState.movieId != null ? String(contentState.movieId) : null;
+
+        if (incomingMovieId && incomingMovieId !== prevMovieId) {
+            resetSubtitleSessionState(`PLAYER_READY movie changed: ${prevMovieId ?? "null"} -> ${incomingMovieId}`);
+        }
         // Save player/track info into contentState (single source of truth)
+
         contentState.setPlayerReady({
             movieId: d.movieId ?? null,
             audioList: (d.audioList ?? []) as AudioTrack[],
             trackList: (d.trackList ?? []) as TimedTextTrack[],
             currentAudio: (d.currentAudio ?? null) as AudioTrack | null,
         });
+
         const movieId = d.movieId;
         contentState.setMovieId(movieId);
         startHideNetflixTimedTextObserver();
@@ -1855,7 +1884,7 @@ window.addEventListener("message", async (ev) => {
         // Initialize non-hardcoded defaults from current title track lists
         ensureTrackIdDefaultsInitialized();
 
-        // Restore persisted prefs
+        // Restore persisted pref
         const prefs = await loadSfPrefs();
 
         // Restore dictation mode immediately (so UI visibility/icon match on refresh)
@@ -1931,7 +1960,7 @@ window.addEventListener("message", async (ev) => {
             };
 
         const translateMeta: TimedTextTrackMeta = translateTrackObj
-            ? toTimedMeta(translateTrackObj as any, "en")
+            ? toTimedMeta(translateTrackObj as any, "ko")
             : {
                 bcp47: prefs.preferredTranslate?.bcp47 ? String(prefs.preferredTranslate.bcp47).toLowerCase() : "en",
                 trackType: prefs.preferredTranslate?.trackType != null ? String(prefs.preferredTranslate.trackType) : null,
@@ -2261,7 +2290,7 @@ function mountSubFluentControls(flagEl: HTMLElement) {
     // 1) 받아쓰기(종이+연필)
     if (!hasDictation) {
         const dictationWrap = createBtn({
-            ariaLabel: "SubFluent 받아쓰기",
+            ariaLabel: "SubDictate 받아쓰기",
             dataUia: "control-subfluent-dictation",
             dataIcon: SF_ICON_DICTATION.dataIcon,
             strokeWidth: SF_ICON_DICTATION.strokeWidth,
@@ -2288,7 +2317,7 @@ function mountSubFluentControls(flagEl: HTMLElement) {
 
         // Create our button shell using Netflix classes via createBtn
         const settingsWrap = createBtn({
-            ariaLabel: "SubFluent 설정",
+            ariaLabel: "SubDictate 설정",
             dataUia: "control-subfluent-settings",
             // placeholder (will be replaced by cloned Netflix SVG)
             dataIcon: "SubtitlesMedium",
