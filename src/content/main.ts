@@ -3,8 +3,9 @@ import { parseTtmlSubtitle } from "../shared/ttmlParser";
 import { setSubFluentLogLevel,subFluentDebug,subFluentError } from "../shared/util";
 import { contentState, makeTrackKey, type TimedTextTrackMeta, type StoredTimedText } from "./state/contentState";
 
-setSubFluentLogLevel("DEBUG");
-
+// setSubFluentLogLevel("DEBUG"); // 개발 중
+// // setSubFluentLogLevel("INFO"); // 평소
+setSubFluentLogLevel("WARN"); // 배포
 // --- Cue time-based logging (NO DOM, console only) ---
 type CueLike = { start: number; end: number; text: string; id?: string; regionX?: number; regionY?: number; };
 type Cluster = {

@@ -3,9 +3,9 @@ import { setSubFluentLogLevel, subFluentDebug, subFluentError, subFluentInfo } f
 import type { PlayerFacade } from "../shared/player";
 import type { TimedTextTrackMeta } from "./state/contentState";
 
-setSubFluentLogLevel("DEBUG"); // 개발 중
+// setSubFluentLogLevel("DEBUG"); // 개발 중
 // // setSubFluentLogLevel("INFO"); // 평소
-// setSubFluentLogLevel("WARN"); // 배포
+setSubFluentLogLevel("WARN"); // 배포
 (function () {
     // ===== 0) 중복 주입 방지 (page world 전역 플래그) =====
     const PAGE_NS = "__SUBFLUENT__";
@@ -327,7 +327,6 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
                                     continue;
                                 }
                                 lastTrackId = tid;
-                                subFluentDebug(playerFacade.getSessionSummary());
                                 await waitForNextTtmlForward(10_000);
                             } catch (e) {
                                 subFluentError(
@@ -431,12 +430,10 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
     }
 
     async function initPlayerChain() {
-        subFluentDebug("InitPlayerChain");
         // SPA route guard: only attempt to init player on /watch/
         if (!isWatch()) {
             return null;
         }
-        subFluentDebug("InitPlayerChain Start");
         const ns = (window as any)[PAGE_NS];
         ns.hooks ??= {};
         
@@ -502,9 +499,6 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
                 if (tt) prefetchTimedText.meta.trackType = tt;
                 if (raw) prefetchTimedText.meta.rawTrackType = raw;
             }
-            
-            subFluentDebug("audioList", audioList);
-            subFluentDebug("trackList", trackList);
 
             post({
                 type: "PLAYER_READY",
@@ -648,7 +642,6 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
         };
 
         (async function initHook() {
-            subFluentDebug("init Hook!");
             const ns = (window as any)[PAGE_NS];
             ns.hooks ??= {};
             if (ns.hooks.xhrHookInstalled) {
@@ -782,7 +775,6 @@ setSubFluentLogLevel("DEBUG"); // 개발 중
         const nowWatch = nextPath.startsWith("/watch/");
 
         if (!wasWatch && nowWatch) {
-            subFluentDebug("[route] entered watch, init player chain");
             initPlayerChain();
         }
     };
