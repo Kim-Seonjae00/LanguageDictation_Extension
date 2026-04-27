@@ -2267,25 +2267,28 @@ function mountSubFluentControls(flagEl: HTMLElement) {
         control.style.border = "0";
         control.style.boxShadow = "none";
         control.style.color = "rgb(255, 255, 255)";
+        control.style.display = "inline-flex";
+        control.style.alignItems = "center";
+        control.style.justifyContent = "center";
 
         // <svg ...>
         const svg = document.createElementNS(svgNS, "svg");
         svg.setAttribute("class", "nf-icon");
         svg.setAttribute("viewBox", "0 0 24 24");
-        svg.setAttribute("width", "44");
-        svg.setAttribute("height", "44");
+        svg.setAttribute("width", "100%");
+        svg.setAttribute("height", "100%");
         svg.setAttribute("data-icon", opts.dataIcon);
         svg.setAttribute("aria-hidden", "true");
-        svg.setAttribute("xmlns", svgNS);
-        svg.setAttribute("fill", "none");
         svg.setAttribute("role", "img");
-        svg.setAttribute("stroke", "currentColor");
         svg.setAttribute("stroke-width", opts.strokeWidth);
         svg.setAttribute("stroke-linecap", "round");
         svg.setAttribute("stroke-linejoin", "round");
         svg.style.color = "rgb(255, 255, 255)";
         svg.style.fill = "none";
         svg.style.stroke = "currentColor";
+        svg.style.width = "100%";
+        svg.style.height = "100%";
+        svg.style.display = "block";
 
         const path = document.createElementNS(svgNS, "path");
         path.setAttribute("d", opts.pathD);
@@ -2340,7 +2343,7 @@ function mountSubFluentControls(flagEl: HTMLElement) {
             dataUia: "control-subfluent-settings",
             // placeholder (will be replaced by cloned Netflix SVG)
             dataIcon: "SubtitlesMedium",
-            strokeWidth: "2",
+            strokeWidth: "1",
             pathD: "M0 0",
             onClick: onSettingsControlbarClick,
         });
@@ -2348,12 +2351,25 @@ function mountSubFluentControls(flagEl: HTMLElement) {
         // Clone Netflix subtitle SVG (fill-based icon) and swap into our button
         const origSvg = origBtn.querySelector("svg") as SVGSVGElement | null;
         if (origSvg) {
-            const cloned = origSvg.cloneNode(true) as SVGSVGElement;
-            const targetSvg = settingsWrap.querySelector("svg") as SVGSVGElement | null;
-            if (targetSvg) {
-                targetSvg.replaceWith(cloned);
-            }
+        const cloned = origSvg.cloneNode(true) as SVGSVGElement;
+
+        cloned.style.color = "rgb(255, 255, 255)";
+        cloned.style.background = "transparent";
+        cloned.style.width = "100%";
+        cloned.style.height = "100%";
+        cloned.style.maxWidth = "100%";
+        cloned.style.maxHeight = "100%";
+        cloned.style.display = "block";
+        cloned.style.flex = "0 0 auto";
+        cloned.setAttribute("width", "100%");
+        cloned.setAttribute("height", "100%");
+
+        const targetSvg = settingsWrap.querySelector("svg") as SVGSVGElement | null;
+        if (targetSvg) {
+            targetSvg.replaceWith(cloned);
         }
+
+    }
 
         // Replace the whole wrapper (div.medium) to preserve layout
         const origWrap = (origBtn.closest("div.medium") as HTMLElement | null) ?? (origBtn.parentElement as HTMLElement | null);
