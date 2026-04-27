@@ -1,7 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "SubDictate",
-  "version": "0.1.0",
+  "name": "__MSG_extName__",
+  "description": "__MSG_extDescription__",
+  "version": "0.2.0",
+  "default_locale": "en",
   "permissions": [ "storage"],
   "host_permissions": ["https://www.netflix.com/*"],
   "background": { "service_worker": "background.js" },

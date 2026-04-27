@@ -2,6 +2,7 @@ import { Msg, type DictationResult, type SendDictation, type ExtMessage, type Ti
 import { parseTtmlSubtitle } from "../shared/ttmlParser";
 import { setSubFluentLogLevel,subFluentDebug,subFluentError } from "../shared/util";
 import { contentState, makeTrackKey, type TimedTextTrackMeta, type StoredTimedText } from "./state/contentState";
+import { tm } from "./i18n/uiMessage";
 
 // setSubFluentLogLevel("DEBUG"); // 개발 중
 // // setSubFluentLogLevel("INFO"); // 평소
@@ -312,7 +313,7 @@ function ensureDictationOverlay() {
     title.style.marginBottom = "0px";
 
     const badge = document.createElement("span");
-    badge.textContent = "DICTATION";
+    badge.textContent = tm("dictationBadge");
     badge.style.fontSize = "11px";
     badge.style.letterSpacing = "0.08em";
     badge.style.padding = "6px 10px";
@@ -345,7 +346,7 @@ function ensureDictationOverlay() {
     replayBtn.type = "button";
     replayBtn.id = "__sf_replay";
     replayBtn.textContent = "↺";
-    replayBtn.title = "다시듣기";
+    replayBtn.title = tm("replayTitle");
     replayBtn.style.width = "36px";
     replayBtn.style.height = "36px";
     replayBtn.style.borderRadius = "10px";
@@ -382,7 +383,7 @@ function ensureDictationOverlay() {
 
     const hint = document.createElement("div");
     hint.id = "__sf_hint";
-    hint.innerHTML = "Type what you hear. <br>Enter = submit · Esc = close";
+    hint.innerHTML = tm("dictationHint");
     hint.style.fontSize = "15px";
     hint.style.opacity = "0.82";
     hint.style.marginBottom = "12px";
@@ -423,7 +424,7 @@ function ensureDictationOverlay() {
     sfInput = document.createElement("input");
     sfInput.id = "__sf_input";
     sfInput.type = "text";
-    sfInput.placeholder = "Type here...";
+    sfInput.placeholder = tm("inputPlaceholder");
     sfInput.style.width = "100%";
     sfInput.style.fontSize = "20px";
     sfInput.style.padding = "12px 14px";
@@ -440,7 +441,7 @@ function ensureDictationOverlay() {
     nextBtn.type = "button";
     nextBtn.id = "__sf_next";
     nextBtn.textContent = "⏭";
-    nextBtn.title = "다음";
+    nextBtn.title = tm("nextTitle");
     nextBtn.style.width = "36px";
     nextBtn.style.height = "36px";
     nextBtn.style.borderRadius = "10px";
@@ -494,13 +495,13 @@ function ensureDictationOverlay() {
                 if (response?.type === Msg.DICTATION_RESULT) {
                     const result = response.payload as DictationResult;
                     expectedEl.style.display = "block";
-                    expectedEl.innerHTML = `Expected: <span style="color:#8ef; font-weight:700;">${escapeHtml(result.sendDictation.expected)}</span>`;
+                    expectedEl.innerHTML = `${tm("expectedLabel")}: <span style="color:#8ef; font-weight:700;">${escapeHtml(result.sendDictation.expected)}</span>`;
 
                     if (result.correct) {
-                        stateEl.innerHTML = "✅ Correct";
+                        stateEl.innerHTML = `✅ ${tm("correct")}`;
                         answerEl.innerHTML = `<span style="color:#a6ff9b;">${escapeHtml(result.sendDictation.actual)}</span>`;
                     } else {
-                        stateEl.innerHTML = "❌ Wrong";
+                        stateEl.innerHTML = `❌ ${tm("wrong")}`;
 
                         const wrongIndices = new Set<number>(result.wrong as any);
                         const words = result.sendDictation.actual.trim().split(/\s+/);
@@ -871,7 +872,7 @@ function ensureSettingsOverlay() {
     topBar.style.marginBottom = "12px";
 
     const title = document.createElement("div");
-    title.textContent = "SubDictate 설정";
+    title.textContent = tm("settingsTitle");
     title.style.fontSize = "16px";
     title.style.fontWeight = "750";
 
@@ -971,7 +972,7 @@ function ensureSettingsOverlay() {
     dictToggleLeft.style.gap = "2px";
 
     const dictToggleLabel = document.createElement("div");
-    dictToggleLabel.textContent = "ON / OFF";
+    dictToggleLabel.textContent = tm("settingsOnOff");
     dictToggleLabel.style.fontSize = "14px";
     dictToggleLabel.style.fontWeight = "750";
     dictToggleLeft.appendChild(dictToggleLabel);
@@ -1044,10 +1045,10 @@ function ensureSettingsOverlay() {
         sfSettingTranslateLang = trSel.value;
     });
 
-    sectionWrap.appendChild(makeRow("받아쓰기 설정", dictToggleWrap));
-    sectionWrap.appendChild(makeRow("오디오 언어 설정", audioSel));
-    sectionWrap.appendChild(makeRow("자막 언어 설정",  subSel));
-    sectionWrap.appendChild(makeRow("번역 언어 설정", trSel));
+    sectionWrap.appendChild(makeRow(tm("settingsDictation"), dictToggleWrap));
+    sectionWrap.appendChild(makeRow(tm("settingsAudio"), audioSel));
+    sectionWrap.appendChild(makeRow(tm("settingsSubtitle"), subSel));
+    sectionWrap.appendChild(makeRow(tm("settingsTranslate"), trSel));
 
     const footer = document.createElement("div");
     footer.style.display = "flex";
@@ -1057,7 +1058,7 @@ function ensureSettingsOverlay() {
 
     const applyBtn = document.createElement("button");
     applyBtn.type = "button";
-    applyBtn.textContent = "적용";
+    applyBtn.textContent = tm("settingsApply");
     applyBtn.style.padding = "10px 14px";
     applyBtn.style.borderRadius = "12px";
     applyBtn.style.border = "1px solid rgba(255,255,255,0.14)";
@@ -1334,7 +1335,7 @@ function showDictationOverlay(ls: number, expected: string, native: string, key:
         expectedEl.innerHTML = "";
         expectedEl.style.display = "none";
     }
-    if (nativeEl) nativeEl.textContent = sfNativeText ? `Meaning: ${sfNativeText}` : "";
+    if (nativeEl) nativeEl.textContent = sfNativeText ? `${tm("nativeMeaningLabel")}: ${sfNativeText}` : "";
 
     sfOverlay.style.display = "flex";
     remountAllSubFluentUi();
