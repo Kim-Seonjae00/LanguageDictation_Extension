@@ -2207,6 +2207,9 @@ function mountSubFluentControls(flagEl: HTMLElement) {
         // <div class="medium nf-medium">
         const wrap = document.createElement("div");
         wrap.className = wrapClass;
+        wrap.style.background = "transparent";
+        wrap.style.border = "0";
+        wrap.style.boxShadow = "none";
 
         // <button ...>
         const btn = document.createElement("button");
@@ -2214,6 +2217,12 @@ function mountSubFluentControls(flagEl: HTMLElement) {
         btn.type = "button";
         btn.setAttribute("aria-label", opts.ariaLabel);
         btn.setAttribute("data-uia", opts.dataUia);
+        btn.style.background = "transparent";
+        btn.style.backgroundColor = "transparent";
+        btn.style.border = "0";
+        btn.style.boxShadow = "none";
+        btn.style.outline = "none";
+        btn.style.color = "rgb(255, 255, 255)";
 
         // ✅ 핸들러 연결 (재사용 가능)
         btn.addEventListener("click", opts.onClick);
@@ -2222,13 +2231,18 @@ function mountSubFluentControls(flagEl: HTMLElement) {
         const control = document.createElement("div");
         control.className = controlClass;
         control.setAttribute("role", "presentation");
+        control.style.background = "transparent";
+        control.style.backgroundColor = "transparent";
+        control.style.border = "0";
+        control.style.boxShadow = "none";
+        control.style.color = "rgb(255, 255, 255)";
 
         // <svg ...>
         const svg = document.createElementNS(svgNS, "svg");
         svg.setAttribute("class", "nf-icon");
         svg.setAttribute("viewBox", "0 0 24 24");
-        svg.setAttribute("width", "24");
-        svg.setAttribute("height", "24");
+        svg.setAttribute("width", "44");
+        svg.setAttribute("height", "44");
         svg.setAttribute("data-icon", opts.dataIcon);
         svg.setAttribute("aria-hidden", "true");
         svg.setAttribute("xmlns", svgNS);
@@ -2238,6 +2252,9 @@ function mountSubFluentControls(flagEl: HTMLElement) {
         svg.setAttribute("stroke-width", opts.strokeWidth);
         svg.setAttribute("stroke-linecap", "round");
         svg.setAttribute("stroke-linejoin", "round");
+        svg.style.color = "rgb(255, 255, 255)";
+        svg.style.fill = "none";
+        svg.style.stroke = "currentColor";
 
         const path = document.createElementNS(svgNS, "path");
         path.setAttribute("d", opts.pathD);
