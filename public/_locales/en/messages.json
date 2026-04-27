@@ -1,0 +1,78 @@
+{
+  "extName": {
+    "message": "SubDictate for Netflix",
+    "description": "Extension name"
+  },
+  "extDescription": {
+    "message": "Subtitle dictation mode for Netflix learners",
+    "description": "Extension description"
+  },
+  "dictationBadge": {
+    "message": "DICTATION",
+    "description": "Badge text in dictation overlay"
+  },
+  "dictationHint": {
+    "message": "Type what you hear. <br>Enter = submit · Esc = close",
+    "description": "Hint text in dictation overlay"
+  },
+  "replayTitle": {
+    "message": "Replay",
+    "description": "Replay button tooltip"
+  },
+  "nextTitle": {
+    "message": "Next",
+    "description": "Next button tooltip"
+  },
+  "inputPlaceholder": {
+    "message": "Type here...",
+    "description": "Input placeholder"
+  },
+  "expectedLabel": {
+    "message": "Expected",
+    "description": "Expected answer label"
+  },
+  "correct": {
+    "message": "Correct",
+    "description": "Correct result text"
+  },
+  "wrong": {
+    "message": "Wrong",
+    "description": "Wrong result text"
+  },
+  "close": {
+    "message": "Close",
+    "description": "Close button text"
+  },
+  "nativeMeaningLabel": {
+    "message": "Meaning",
+    "description": "Meaning label"
+  },
+  "settingsTitle": {
+    "message": "SubDictate Settings",
+    "description": "Settings modal title"
+  },
+  "settingsDictation": {
+    "message": "Dictation",
+    "description": "Dictation setting label"
+  },
+  "settingsAudio": {
+    "message": "Audio Language",
+    "description": "Audio language setting label"
+  },
+  "settingsSubtitle": {
+    "message": "Subtitle Language",
+    "description": "Subtitle language setting label"
+  },
+  "settingsTranslate": {
+    "message": "Translation Language",
+    "description": "Translation language setting label"
+  },
+  "settingsApply": {
+    "message": "Apply",
+    "description": "Apply button text"
+  },
+  "settingsOnOff": {
+    "message": "ON / OFF",
+    "description": "On off label"
+  }
+}

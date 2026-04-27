@@ -1,0 +1,78 @@
+{
+  "extName": {
+    "message": "SubDictate for Netflix",
+    "description": "Nome dell’estensione"
+  },
+  "extDescription": {
+    "message": "Modalità dettato con sottotitoli per studenti di Netflix",
+    "description": "Descrizione dell’estensione"
+  },
+  "dictationBadge": {
+    "message": "DETTATO",
+    "description": "Testo del badge nella sovrapposizione dettato"
+  },
+  "dictationHint": {
+    "message": "Digita ciò che senti. <br>Invio = invia · Esc = chiudi",
+    "description": "Testo di aiuto nella sovrapposizione dettato"
+  },
+  "replayTitle": {
+    "message": "Riascolta",
+    "description": "Tooltip del pulsante riascolta"
+  },
+  "nextTitle": {
+    "message": "Avanti",
+    "description": "Tooltip del pulsante avanti"
+  },
+  "inputPlaceholder": {
+    "message": "Digita qui...",
+    "description": "Segnaposto del campo di input"
+  },
+  "expectedLabel": {
+    "message": "Atteso",
+    "description": "Etichetta della risposta attesa"
+  },
+  "correct": {
+    "message": "Corretto",
+    "description": "Testo del risultato corretto"
+  },
+  "wrong": {
+    "message": "Errato",
+    "description": "Testo del risultato errato"
+  },
+  "close": {
+    "message": "Chiudi",
+    "description": "Testo del pulsante chiudi"
+  },
+  "nativeMeaningLabel": {
+    "message": "Significato",
+    "description": "Etichetta del significato"
+  },
+  "settingsTitle": {
+    "message": "Impostazioni di SubDictate",
+    "description": "Titolo della finestra impostazioni"
+  },
+  "settingsDictation": {
+    "message": "Dettato",
+    "description": "Etichetta impostazione dettato"
+  },
+  "settingsAudio": {
+    "message": "Lingua audio",
+    "description": "Etichetta impostazione lingua audio"
+  },
+  "settingsSubtitle": {
+    "message": "Lingua sottotitoli",
+    "description": "Etichetta impostazione lingua sottotitoli"
+  },
+  "settingsTranslate": {
+    "message": "Lingua traduzione",
+    "description": "Etichetta impostazione lingua traduzione"
+  },
+  "settingsApply": {
+    "message": "Applica",
+    "description": "Testo del pulsante applica"
+  },
+  "settingsOnOff": {
+    "message": "ON / OFF",
+    "description": "Etichetta on off"
+  }
+}

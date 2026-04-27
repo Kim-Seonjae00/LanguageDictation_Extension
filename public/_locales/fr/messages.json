@@ -1,0 +1,78 @@
+{
+  "extName": {
+    "message": "SubDictate for Netflix",
+    "description": "Nom de l’extension"
+  },
+  "extDescription": {
+    "message": "Mode de dictée par sous-titres pour les apprenants sur Netflix",
+    "description": "Description de l’extension"
+  },
+  "dictationBadge": {
+    "message": "DICTÉE",
+    "description": "Texte du badge dans la fenêtre de dictée"
+  },
+  "dictationHint": {
+    "message": "Tapez ce que vous entendez. <br>Entrée = valider · Échap = fermer",
+    "description": "Texte d’aide dans la fenêtre de dictée"
+  },
+  "replayTitle": {
+    "message": "Réécouter",
+    "description": "Infobulle du bouton réécouter"
+  },
+  "nextTitle": {
+    "message": "Suivant",
+    "description": "Infobulle du bouton suivant"
+  },
+  "inputPlaceholder": {
+    "message": "Tapez ici...",
+    "description": "Texte indicatif du champ de saisie"
+  },
+  "expectedLabel": {
+    "message": "Réponse attendue",
+    "description": "Libellé de la réponse attendue"
+  },
+  "correct": {
+    "message": "Correct",
+    "description": "Texte du résultat correct"
+  },
+  "wrong": {
+    "message": "Incorrect",
+    "description": "Texte du résultat incorrect"
+  },
+  "close": {
+    "message": "Fermer",
+    "description": "Texte du bouton fermer"
+  },
+  "nativeMeaningLabel": {
+    "message": "Sens",
+    "description": "Libellé du sens"
+  },
+  "settingsTitle": {
+    "message": "Paramètres SubDictate",
+    "description": "Titre de la fenêtre des paramètres"
+  },
+  "settingsDictation": {
+    "message": "Dictée",
+    "description": "Libellé du paramètre de dictée"
+  },
+  "settingsAudio": {
+    "message": "Langue audio",
+    "description": "Libellé du paramètre de langue audio"
+  },
+  "settingsSubtitle": {
+    "message": "Langue des sous-titres",
+    "description": "Libellé du paramètre de langue des sous-titres"
+  },
+  "settingsTranslate": {
+    "message": "Langue de traduction",
+    "description": "Libellé du paramètre de langue de traduction"
+  },
+  "settingsApply": {
+    "message": "Appliquer",
+    "description": "Texte du bouton appliquer"
+  },
+  "settingsOnOff": {
+    "message": "ON / OFF",
+    "description": "Libellé marche arrêt"
+  }
+}

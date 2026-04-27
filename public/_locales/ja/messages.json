@@ -1,0 +1,78 @@
+{
+  "extName": {
+    "message": "SubDictate for Netflix",
+    "description": "拡張機能名"
+  },
+  "extDescription": {
+    "message": "Netflix学習者のための字幕ディクテーションモード",
+    "description": "拡張機能の説明"
+  },
+  "dictationBadge": {
+    "message": "ディクテーション",
+    "description": "ディクテーションオーバーレイのバッジ"
+  },
+  "dictationHint": {
+    "message": "聞こえた内容を入力してください。<br>Enter = 送信 · Esc = 閉じる",
+    "description": "ディクテーションオーバーレイの案内文"
+  },
+  "replayTitle": {
+    "message": "もう一度聞く",
+    "description": "再生ボタンのツールチップ"
+  },
+  "nextTitle": {
+    "message": "次へ",
+    "description": "次へボタンのツールチップ"
+  },
+  "inputPlaceholder": {
+    "message": "ここに入力してください...",
+    "description": "入力欄のプレースホルダー"
+  },
+  "expectedLabel": {
+    "message": "正解",
+    "description": "正解ラベル"
+  },
+  "correct": {
+    "message": "正解",
+    "description": "正解結果テキスト"
+  },
+  "wrong": {
+    "message": "不正解",
+    "description": "不正解結果テキスト"
+  },
+  "close": {
+    "message": "閉じる",
+    "description": "閉じるボタンテキスト"
+  },
+  "nativeMeaningLabel": {
+    "message": "意味",
+    "description": "意味ラベル"
+  },
+  "settingsTitle": {
+    "message": "SubDictate 設定",
+    "description": "設定モーダルのタイトル"
+  },
+  "settingsDictation": {
+    "message": "ディクテーション設定",
+    "description": "ディクテーション設定ラベル"
+  },
+  "settingsAudio": {
+    "message": "音声言語設定",
+    "description": "音声言語設定ラベル"
+  },
+  "settingsSubtitle": {
+    "message": "字幕言語設定",
+    "description": "字幕言語設定ラベル"
+  },
+  "settingsTranslate": {
+    "message": "翻訳言語設定",
+    "description": "翻訳言語設定ラベル"
+  },
+  "settingsApply": {
+    "message": "適用",
+    "description": "適用ボタンテキスト"
+  },
+  "settingsOnOff": {
+    "message": "ON / OFF",
+    "description": "オンオフラベル"
+  }
+}

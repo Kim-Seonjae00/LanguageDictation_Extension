@@ -1,0 +1,78 @@
+{
+  "extName": {
+    "message": "SubDictate for Netflix",
+    "description": "확장 프로그램 이름"
+  },
+  "extDescription": {
+    "message": "넷플릭스 학습자를 위한 자막 받아쓰기 모드",
+    "description": "확장 프로그램 설명"
+  },
+  "dictationBadge": {
+    "message": "받아쓰기",
+    "description": "받아쓰기 오버레이 배지 텍스트"
+  },
+  "dictationHint": {
+    "message": "들리는 문장을 입력하세요. <br>Enter = 제출 · Esc = 닫기",
+    "description": "받아쓰기 오버레이 안내 문구"
+  },
+  "replayTitle": {
+    "message": "다시 듣기",
+    "description": "다시 듣기 버튼 툴팁"
+  },
+  "nextTitle": {
+    "message": "다음",
+    "description": "다음 버튼 툴팁"
+  },
+  "inputPlaceholder": {
+    "message": "여기에 입력하세요...",
+    "description": "입력창 플레이스홀더"
+  },
+  "expectedLabel": {
+    "message": "정답",
+    "description": "정답 라벨"
+  },
+  "correct": {
+    "message": "정답",
+    "description": "정답 결과 텍스트"
+  },
+  "wrong": {
+    "message": "오답",
+    "description": "오답 결과 텍스트"
+  },
+  "close": {
+    "message": "닫기",
+    "description": "닫기 버튼 텍스트"
+  },
+  "nativeMeaningLabel": {
+    "message": "의미",
+    "description": "의미 라벨"
+  },
+  "settingsTitle": {
+    "message": "SubDictate 설정",
+    "description": "설정 모달 제목"
+  },
+  "settingsDictation": {
+    "message": "받아쓰기 설정",
+    "description": "받아쓰기 설정 라벨"
+  },
+  "settingsAudio": {
+    "message": "오디오 언어 설정",
+    "description": "오디오 언어 설정 라벨"
+  },
+  "settingsSubtitle": {
+    "message": "자막 언어 설정",
+    "description": "자막 언어 설정 라벨"
+  },
+  "settingsTranslate": {
+    "message": "번역 언어 설정",
+    "description": "번역 언어 설정 라벨"
+  },
+  "settingsApply": {
+    "message": "적용",
+    "description": "적용 버튼 텍스트"
+  },
+  "settingsOnOff": {
+    "message": "ON / OFF",
+    "description": "온오프 라벨"
+  }
+}

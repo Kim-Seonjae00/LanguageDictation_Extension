@@ -1,0 +1,78 @@
+{
+  "extName": {
+    "message": "SubDictate for Netflix",
+    "description": "扩展程序名称"
+  },
+  "extDescription": {
+    "message": "为Netflix学习者提供的字幕听写模式",
+    "description": "扩展程序说明"
+  },
+  "dictationBadge": {
+    "message": "听写",
+    "description": "听写浮层徽标文本"
+  },
+  "dictationHint": {
+    "message": "请输入你听到的内容。<br>Enter = 提交 · Esc = 关闭",
+    "description": "听写浮层提示文本"
+  },
+  "replayTitle": {
+    "message": "重听",
+    "description": "重听按钮提示"
+  },
+  "nextTitle": {
+    "message": "下一句",
+    "description": "下一句按钮提示"
+  },
+  "inputPlaceholder": {
+    "message": "请在这里输入...",
+    "description": "输入框占位文本"
+  },
+  "expectedLabel": {
+    "message": "正确答案",
+    "description": "正确答案标签"
+  },
+  "correct": {
+    "message": "正确",
+    "description": "正确结果文本"
+  },
+  "wrong": {
+    "message": "错误",
+    "description": "错误结果文本"
+  },
+  "close": {
+    "message": "关闭",
+    "description": "关闭按钮文本"
+  },
+  "nativeMeaningLabel": {
+    "message": "含义",
+    "description": "含义标签"
+  },
+  "settingsTitle": {
+    "message": "SubDictate 设置",
+    "description": "设置弹窗标题"
+  },
+  "settingsDictation": {
+    "message": "听写设置",
+    "description": "听写设置标签"
+  },
+  "settingsAudio": {
+    "message": "音频语言设置",
+    "description": "音频语言设置标签"
+  },
+  "settingsSubtitle": {
+    "message": "字幕语言设置",
+    "description": "字幕语言设置标签"
+  },
+  "settingsTranslate": {
+    "message": "翻译语言设置",
+    "description": "翻译语言设置标签"
+  },
+  "settingsApply": {
+    "message": "应用",
+    "description": "应用按钮文本"
+  },
+  "settingsOnOff": {
+    "message": "ON / OFF",
+    "description": "开关标签"
+  }
+}

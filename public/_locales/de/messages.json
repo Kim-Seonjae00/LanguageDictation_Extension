@@ -1,0 +1,78 @@
+{
+  "extName": {
+    "message": "SubDictate for Netflix",
+    "description": "Name der Erweiterung"
+  },
+  "extDescription": {
+    "message": "Untertitel-Diktatmodus für Netflix-Lernende",
+    "description": "Beschreibung der Erweiterung"
+  },
+  "dictationBadge": {
+    "message": "DIKTAT",
+    "description": "Badge-Text im Diktat-Overlay"
+  },
+  "dictationHint": {
+    "message": "Geben Sie ein, was Sie hören. <br>Eingabe = senden · Esc = schließen",
+    "description": "Hinweistext im Diktat-Overlay"
+  },
+  "replayTitle": {
+    "message": "Erneut abspielen",
+    "description": "Tooltip für den Wiederholen-Button"
+  },
+  "nextTitle": {
+    "message": "Weiter",
+    "description": "Tooltip für den Weiter-Button"
+  },
+  "inputPlaceholder": {
+    "message": "Hier eingeben...",
+    "description": "Platzhalter im Eingabefeld"
+  },
+  "expectedLabel": {
+    "message": "Erwartet",
+    "description": "Bezeichnung für erwartete Antwort"
+  },
+  "correct": {
+    "message": "Richtig",
+    "description": "Text für richtiges Ergebnis"
+  },
+  "wrong": {
+    "message": "Falsch",
+    "description": "Text für falsches Ergebnis"
+  },
+  "close": {
+    "message": "Schließen",
+    "description": "Text des Schließen-Buttons"
+  },
+  "nativeMeaningLabel": {
+    "message": "Bedeutung",
+    "description": "Bezeichnung für Bedeutung"
+  },
+  "settingsTitle": {
+    "message": "SubDictate-Einstellungen",
+    "description": "Titel des Einstellungsdialogs"
+  },
+  "settingsDictation": {
+    "message": "Diktat",
+    "description": "Bezeichnung für Diktat-Einstellung"
+  },
+  "settingsAudio": {
+    "message": "Audiosprache",
+    "description": "Bezeichnung für Audio-Spracheinstellung"
+  },
+  "settingsSubtitle": {
+    "message": "Untertitelsprache",
+    "description": "Bezeichnung für Untertitel-Spracheinstellung"
+  },
+  "settingsTranslate": {
+    "message": "Übersetzungssprache",
+    "description": "Bezeichnung für Übersetzungsspracheinstellung"
+  },
+  "settingsApply": {
+    "message": "Anwenden",
+    "description": "Text des Anwenden-Buttons"
+  },
+  "settingsOnOff": {
+    "message": "ON / OFF",
+    "description": "Ein-Aus-Bezeichnung"
+  }
+}

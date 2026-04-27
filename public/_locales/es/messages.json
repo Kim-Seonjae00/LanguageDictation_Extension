@@ -1,0 +1,78 @@
+{
+  "extName": {
+    "message": "SubDictate for Netflix",
+    "description": "Nombre de la extensión"
+  },
+  "extDescription": {
+    "message": "Modo de dictado con subtítulos para estudiantes de Netflix",
+    "description": "Descripción de la extensión"
+  },
+  "dictationBadge": {
+    "message": "DICTADO",
+    "description": "Texto de la insignia en la capa de dictado"
+  },
+  "dictationHint": {
+    "message": "Escribe lo que escuchas. <br>Enter = enviar · Esc = cerrar",
+    "description": "Texto de ayuda en la capa de dictado"
+  },
+  "replayTitle": {
+    "message": "Repetir",
+    "description": "Tooltip del botón repetir"
+  },
+  "nextTitle": {
+    "message": "Siguiente",
+    "description": "Tooltip del botón siguiente"
+  },
+  "inputPlaceholder": {
+    "message": "Escribe aquí...",
+    "description": "Texto de marcador del campo de entrada"
+  },
+  "expectedLabel": {
+    "message": "Esperado",
+    "description": "Etiqueta de respuesta esperada"
+  },
+  "correct": {
+    "message": "Correcto",
+    "description": "Texto de resultado correcto"
+  },
+  "wrong": {
+    "message": "Incorrecto",
+    "description": "Texto de resultado incorrecto"
+  },
+  "close": {
+    "message": "Cerrar",
+    "description": "Texto del botón cerrar"
+  },
+  "nativeMeaningLabel": {
+    "message": "Significado",
+    "description": "Etiqueta de significado"
+  },
+  "settingsTitle": {
+    "message": "Configuración de SubDictate",
+    "description": "Título del modal de configuración"
+  },
+  "settingsDictation": {
+    "message": "Dictado",
+    "description": "Etiqueta de configuración de dictado"
+  },
+  "settingsAudio": {
+    "message": "Idioma de audio",
+    "description": "Etiqueta de configuración de idioma de audio"
+  },
+  "settingsSubtitle": {
+    "message": "Idioma de subtítulos",
+    "description": "Etiqueta de configuración de idioma de subtítulos"
+  },
+  "settingsTranslate": {
+    "message": "Idioma de traducción",
+    "description": "Etiqueta de configuración de idioma de traducción"
+  },
+  "settingsApply": {
+    "message": "Aplicar",
+    "description": "Texto del botón aplicar"
+  },
+  "settingsOnOff": {
+    "message": "ON / OFF",
+    "description": "Etiqueta de encendido apagado"
+  }
+}

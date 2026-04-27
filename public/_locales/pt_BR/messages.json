@@ -1,0 +1,78 @@
+{
+  "extName": {
+    "message": "SubDictate for Netflix",
+    "description": "Nome da extensão"
+  },
+  "extDescription": {
+    "message": "Modo de ditado com legendas para estudantes do Netflix",
+    "description": "Descrição da extensão"
+  },
+  "dictationBadge": {
+    "message": "DITADO",
+    "description": "Texto do selo na sobreposição de ditado"
+  },
+  "dictationHint": {
+    "message": "Digite o que você ouve. <br>Enter = enviar · Esc = fechar",
+    "description": "Texto de ajuda na sobreposição de ditado"
+  },
+  "replayTitle": {
+    "message": "Ouvir novamente",
+    "description": "Tooltip do botão de repetir"
+  },
+  "nextTitle": {
+    "message": "Próximo",
+    "description": "Tooltip do botão próximo"
+  },
+  "inputPlaceholder": {
+    "message": "Digite aqui...",
+    "description": "Texto de placeholder do campo de entrada"
+  },
+  "expectedLabel": {
+    "message": "Esperado",
+    "description": "Rótulo da resposta esperada"
+  },
+  "correct": {
+    "message": "Correto",
+    "description": "Texto de resultado correto"
+  },
+  "wrong": {
+    "message": "Incorreto",
+    "description": "Texto de resultado incorreto"
+  },
+  "close": {
+    "message": "Fechar",
+    "description": "Texto do botão fechar"
+  },
+  "nativeMeaningLabel": {
+    "message": "Significado",
+    "description": "Rótulo de significado"
+  },
+  "settingsTitle": {
+    "message": "Configurações do SubDictate",
+    "description": "Título do modal de configurações"
+  },
+  "settingsDictation": {
+    "message": "Ditado",
+    "description": "Rótulo da configuração de ditado"
+  },
+  "settingsAudio": {
+    "message": "Idioma do áudio",
+    "description": "Rótulo da configuração de idioma do áudio"
+  },
+  "settingsSubtitle": {
+    "message": "Idioma das legendas",
+    "description": "Rótulo da configuração de idioma das legendas"
+  },
+  "settingsTranslate": {
+    "message": "Idioma da tradução",
+    "description": "Rótulo da configuração de idioma da tradução"
+  },
+  "settingsApply": {
+    "message": "Aplicar",
+    "description": "Texto do botão aplicar"
+  },
+  "settingsOnOff": {
+    "message": "ON / OFF",
+    "description": "Rótulo liga desliga"
+  }
+}
